@@ -59,8 +59,11 @@ and loads nothing from the internet.
   the Procmon events behind the change (see [Live monitoring](#live-monitoring)), and
   the full object. Click any field to add it to the query.
 - **Facets and cards** (severity, kind, change type, rule, and the process that made the
-  change) count what matches the current query.
-  Click one to narrow the query.
+  change) count what matches the current query. Clicking one toggles its term: once to add
+  it, again to remove it (active ones are highlighted). Picking another kind, change type
+  or severity replaces the current one instead of adding an impossible `kind = a and
+  kind = b`, and those three are counted as if their own term weren't set, so the
+  alternatives stay visible.
 - **Export:** JSONL or CSV of everything matching the query, including `modified_by`.
 - **The URL keeps the state** (query, comparison, selected item), so a bookmark reopens a
   finding exactly.

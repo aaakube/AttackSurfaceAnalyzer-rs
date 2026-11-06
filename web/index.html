@@ -41,6 +41,8 @@ button.primary:disabled { opacity: .6; cursor: wait; }
 .list-item small { display: block; color: var(--muted); font-size: 11px; }
 .facet { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 13px; }
 .facet:hover { background: var(--hover); }
+.facet.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.card.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .facet .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .facet .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 section.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -388,10 +390,57 @@ function openRun(id) {
 }
 
 // ---------------------------------------------------------------- query
+// The query as its top-level `and` terms (adjacent terms are and-ed too), or null
+// when it has a top-level `or` and so can't be edited term by term.
+function andTerms(q) {
+  const terms = []; let depth = 0, sawOr = false;
+  const words = q.match(/"[^"]*"?|'[^']*'?|[()]|[^\s()"']+|\s+/g) || [];
+  let pending = [];
+  const flush = () => { const t = pending.join("").trim(); if (t) terms.push(t); pending = []; };
+  for (const w of words) {
+    if (w === "(") depth++;
+    if (w === ")") depth--;
+    if (depth === 0 && /^and$/i.test(w)) { flush(); continue; }
+    if (depth === 0 && /^or$/i.test(w)) sawOr = true;
+    pending.push(w);
+  }
+  flush();
+  return sawOr ? null : terms;
+}
+// Canonical form for comparing terms: case, spacing and quoting don't matter.
+const norm = (t) => t.toLowerCase().replace(/["']/g, "").replace(/\s+/g, "").replace(/^\((.*)\)$/, "$1");
+// `field = value` -> field, for terms a facet click can replace.
+const eqField = (t) => { const m = /^([A-Za-z_][\w.]*)\s*=\s*\S/.exec(t.trim()); return m ? m[1].toLowerCase() : null; };
+// Fields a result has exactly one value of: picking another value replaces the term.
+const SINGLE = new Set(["kind", "change", "severity"]);
+
+function hasClause(clause) {
+  const terms = andTerms(state.q);
+  return !!terms && terms.some((t) => norm(t) === norm(clause));
+}
+// Facets, cards and object fields toggle their term: click once to add it, again to
+// remove it. Another value of a single-valued field replaces the current one.
+function toggleClause(q, clause) {
+  q = q.trim();
+  const terms = andTerms(q);
+  if (!q) return clause;
+  if (!terms) return `(${q}) and ${clause}`;
+  if (terms.some((t) => norm(t) === norm(clause))) return terms.filter((t) => norm(t) !== norm(clause)).join(" and ");
+  const f = eqField(clause);
+  const i = f && SINGLE.has(f) ? terms.findIndex((t) => eqField(t) === f) : -1;
+  if (i >= 0) terms[i] = clause; else terms.push(clause);
+  return terms.join(" and ");
+}
 function addClause(clause) {
-  const q = $("q").value.trim();
-  $("q").value = q ? `${q} and ${clause}` : clause;
+  $("q").value = toggleClause($("q").value, clause);
   state.q = $("q").value; refresh();
+}
+// Facet/card element that toggles `clause`, highlighted while it is in the query.
+function toggler(tag, attrs, clause, ...kids) {
+  const on = hasClause(clause);
+  return h(tag, { ...attrs, class: attrs.class + (on ? " on" : ""), "aria-pressed": on ? "true" : "false",
+    title: attrs.title || (on ? "Click to remove from the query" : `Filter: ${clause}`), "data-clause": clause,
+    onclick: () => addClause(clause) }, ...kids);
 }
 const quote = (s) => /^[A-Za-z0-9_.\-]+$/.test(s) ? s : (s.includes('"') ? `'${s}'` : `"${s}"`);
 
@@ -559,23 +608,37 @@ function select(tr) {
   tr.classList.add("on");
 }
 
+// Severity, kind and change are counted as if their own term were not in the query,
+// so with `kind = service` the Kind facet still lists the other kinds to switch to.
 async function loadFacets(mySeq) {
   let f;
-  try { f = await api("/api/facets", { c: state.c, q: state.q }); } catch { return; }
+  try {
+    const terms = andTerms(state.q) || [];
+    const fields = ["severity", "kind", "change"];
+    const without = fields.map((fld) => {
+      const rest = terms.filter((t) => eqField(t) !== fld);
+      return rest.length === terms.length ? null : rest.join(" and ");
+    });
+    const [main, ...others] = await Promise.all([
+      api("/api/facets", { c: state.c, q: state.q }),
+      ...without.map((q) => q === null ? null : api("/api/facets", { c: state.c, q }))]);
+    f = main;
+    fields.forEach((fld, i) => { if (others[i]) f[fld] = others[i][fld]; });
+  } catch { return; }
   if (mySeq !== seq) return;
   const sevCounts = Object.fromEntries(f.severity);
   $("cards").replaceChildren(...SEVS.map((s) =>
-    h("div", { class: "card", onclick: () => addClause(`severity = ${s}`) },
+    toggler("div", { class: "card" }, `severity = ${s}`,
       h("div", { class: "v" }, (sevCounts[s] || 0).toLocaleString()), h("div", { class: "k sev " + s }, s))));
   const block = (title, rows) => rows.length ? [h("h2", {}, title), ...rows] : [];
   $("facets").replaceChildren(
-    ...block("Kind", (f.kind || []).map(([k, n]) => h("div", { class: "facet", onclick: () => addClause(`kind = ${k}`) },
+    ...block("Kind", (f.kind || []).map(([k, n]) => toggler("div", { class: "facet" }, `kind = ${k}`,
       h("span", { class: "name" }, h("span", { class: "kind" }, k)), h("span", { class: "n" }, n.toLocaleString())))),
-    ...block("Change", f.change.map(([k, n]) => h("div", { class: "facet", onclick: () => addClause(`change = ${k}`) },
+    ...block("Change", f.change.map(([k, n]) => toggler("div", { class: "facet" }, `change = ${k}`,
       h("span", { class: "name chg " + k }, k), h("span", { class: "n" }, n.toLocaleString())))),
-    ...block("Modified by (Procmon)", (f.processes || []).map(([p, n]) => h("div", { class: "facet", title: p, onclick: () => addClause(`modified_by = ${quote(p)}`) },
+    ...block("Modified by (Procmon)", (f.processes || []).map(([p, n]) => toggler("div", { class: "facet", title: p }, `modified_by = ${quote(p)}`,
       h("span", { class: "name" }, p), h("span", { class: "n" }, n.toLocaleString())))),
-    ...block("Rules", f.rules.map(([rule, sev, n]) => h("div", { class: "facet", title: rule, onclick: () => addClause(`rule = ${quote(rule)}`) },
+    ...block("Rules", f.rules.map(([rule, sev, n]) => toggler("div", { class: "facet", title: rule }, `rule = ${quote(rule)}`,
       h("span", { class: "name" }, h("span", { class: "sev " + sev }, "● "), rule), h("span", { class: "n" }, n.toLocaleString())))));
 }
 
