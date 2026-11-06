@@ -45,13 +45,23 @@ and loads nothing from the internet.
 - **Compare:** pick two runs and press *Compare*. The comparison is computed once and stored
   in the database, so filtering, sorting and paging stay instant even with hundreds of
   thousands of changes.
+- **List or tree:** the results show as a sortable list, or as a tree of their paths
+  (`C:\Program Files\Vendor\...`, `HKLM\SOFTWARE\...`, one root per kind) with change
+  counts per folder. Folders open one level at a time, so even 100,000 changes stay fast,
+  and chains of single folders collapse into one row.
+- **Coverage notices:** if a run did not finish, a collector failed, a kind was collected in
+  only one of the two runs, or collection hit access-denied warnings, the comparison says so
+  above the results (and `asa diff` prints the same notes). That way a missing change is never
+  taken for "nothing changed".
 - **Browse run:** query the objects of a single snapshot, for example every unsigned PE on
   the machine.
-- **Detail panel:** findings with explanations, a before/after table of changed fields, and
+- **Detail panel:** findings with explanations, a before/after table of changed fields,
+  the Procmon events behind the change (see [Live monitoring](#live-monitoring)), and
   the full object. Click any field to add it to the query.
-- **Facets and cards** (severity, change type, rule) count what matches the current query.
+- **Facets and cards** (severity, kind, change type, rule, and the process that made the
+  change) count what matches the current query.
   Click one to narrow the query.
-- **Export:** JSONL or CSV of everything matching the query.
+- **Export:** JSONL or CSV of everything matching the query, including `modified_by`.
 - **The URL keeps the state** (query, comparison, selected item), so a bookmark reopens a
   finding exactly.
 
@@ -66,6 +76,7 @@ path ~ "\\Program Files( \(x86\))?\\Google\\" and change = created
 not pe.aslr or not pe.dep
 signature.signer changed
 size > 50000000
+modified_by = msiexec.exe                (needs an imported Procmon capture)
 chrome                                   (a bare word searches paths)
 ```
 
@@ -75,7 +86,7 @@ snapshots). Combine with `and`, `or`, `not` and parentheses. Adjacent terms are 
 String comparisons ignore case. Strings take no escapes, so write Windows paths as-is; to
 include a quote character, delimit the string with the other kind of quote.
 
-Fields: `path`, `kind`, `change`, `severity`, `rule`, plus any object field (see below), with
+Fields: `path`, `kind`, `change`, `severity`, `rule`, `modified_by`, plus any object field (see below), with
 dots for nested ones (`signature.status`, `pe.cfg`).
 
 ## Air-gapped deployment
@@ -119,6 +130,7 @@ Offline behaviour:
 | `asa serve [--open]` | Web UI (see above). `--rules FILE` uses custom rules, `--listen ADDR` changes the address. |
 | `asa diff BASE COMPARE` | Compare two runs in the terminal or to a file. `--format table\|json\|jsonl\|sarif`, `-o FILE`, `--min-severity LEVEL`, `--rules FILE`. `--fail-on LEVEL` exits with status 1 if a change reaches that level. |
 | `asa runs list\|delete ID\|export ID` | Manage runs. `export` dumps a snapshot as JSON lines. |
+| `asa procmon import FILE.csv\|list\|delete NAME` | Import a Process Monitor capture so each change shows which process made it. `--name` names the capture. |
 | `asa rules check [FILE]` | Validate a rules file and lint it for unknown fields and regexes that can never match. |
 | `asa rules default` | Print the built-in rules, as a starting point for your own. |
 
@@ -223,8 +235,9 @@ VM (QEMU/KVM) that is air-gapped by default, like the production workstation:
 ```bash
 vm/vm.sh install            # unattended install from the Windows 11 Enterprise LTSC evaluation ISO
 vm/test.sh [--full]         # unit tests on Windows + end-to-end scenario (+ full-drive benchmark)
-vm/features.sh              # every feature: attack scenario for all 74 rules, CLI, API, web UI
+vm/features.sh              # every feature: attack scenario for the default rules, CLI, API, web UI
                             # (Edge driven over DevTools), bundle, regressions -> feature-report.md
+vm/procmon-test.sh PROCMON64.EXE   # real Procmon capture -> attribution, notices, tree (API + Edge)
 vm/acceptance-chrome.sh     # replay a Chrome install on the 'clean' checkpoint and check every
                             # service/firewall/COM/registry change PowerShell sees is reported
 vm/vm.sh run SCRIPT.ps1     # run a script in a visible window on the VM desktop
@@ -246,22 +259,40 @@ started.
 
 ## Live monitoring
 
-asa compares snapshots: it tells you *what* changed and whether it matters, not *which
-process* did it or what existed only briefly. For that, run Sysinternals Process Monitor
-(`Procmon64.exe`, single signed binary, works offline) during the install:
+asa compares snapshots: it tells you *what* changed and whether it matters. To also see
+*which process* made each change, run Sysinternals Process Monitor (`Procmon64.exe`, a
+single signed binary that works offline) between the two snapshots, and import its trace:
 
 ```powershell
-Procmon64.exe /AcceptEula /Quiet /Minimized /BackingFile C:\trace.pml /LoadConfig filters.pmc
+asa collect --run-id before
+Procmon64.exe /AcceptEula /Quiet /Minimized /BackingFile C:\trace.pml
 # ... install ...
 Procmon64.exe /Terminate
 Procmon64.exe /OpenLog C:\trace.pml /SaveAs C:\trace.csv
+asa collect --run-id after
+asa procmon import C:\trace.csv
+asa serve --open
 ```
+
+The import keeps only events that modify something (successful writes, creates,
+deletes, renames, security changes and registry value or key changes). Repeated events are
+folded into one per process, operation and path, so a multi-gigabyte trace becomes a small
+table. File I/O by `System` is dropped: that is the cache manager flushing other
+processes' writes. Changes are then matched to events on their file, or on the registry
+key behind the object (services, firewall rules and profiles, COM classes, AppIDs and type
+libraries, certificates, registry keys). Users, groups, Wi-Fi profiles and ports cannot be
+attributed this way.
+
+In the web UI each row says who changed it ("by msiexec.exe"), the *Modified by* facet
+counts changes per process, the detail panel lists the events, and `modified_by` works in
+queries. Some changes are made by a service on the caller's behalf. In the test VM, `sc
+create` shows up as `services.exe` and `netsh advfirewall` as `svchost.exe`, which is what
+really wrote them.
 
 ## Roadmap
 
 Scheduled tasks as parsed objects (today they are seen as files), WMI event subscriptions,
-TPM and key-storage inventory, importing a Procmon trace to attribute changes to processes,
-and custom registry locations from the command line.
+TPM and key-storage inventory, and custom registry locations from the command line.
 
 ## License
 

@@ -48,6 +48,8 @@ struct App {
     computing: Mutex<()>,
     /// The comparison being computed right now, for `/api/progress`.
     job: Mutex<Option<Job>>,
+    /// Serializes linking results to Procmon captures (see procmon.rs).
+    attributing: Mutex<()>,
 }
 
 pub fn serve(
@@ -95,6 +97,7 @@ pub fn serve(
         rules_hash,
         hosts,
         computing: Mutex::new(()),
+        attributing: Mutex::new(()),
         job: Mutex::new(None),
     });
     for req in server.incoming_requests() {
@@ -167,16 +170,13 @@ fn handle(app: &App, req: Request) {
             let _ = req.respond(resp);
             return;
         }
-        (Method::Get, "/api/info") => Ok(json!({
-            "db": app.db.display().to_string(),
-            "version": env!("CARGO_PKG_VERSION"),
-            "rules": app.rules.rules.len(),
-        })),
+        (Method::Get, "/api/info") => info(app),
         (Method::Get, "/api/runs") => runs(app),
         (Method::Post, "/api/compare") => compare(app, &params),
         (Method::Get, "/api/progress") => Ok(progress(app)),
         (Method::Get, "/api/results") => results(app, &params),
         (Method::Get, "/api/facets") => facets(app, &params),
+        (Method::Get, "/api/tree") => tree(app, &params),
         (Method::Get, "/api/result") => result_detail(app, &params),
         (Method::Get, "/api/objects") => objects(app, &params),
         (Method::Get, "/api/object") => object_detail(app, &params),
@@ -249,6 +249,15 @@ fn open(app: &App) -> Result<Store, ApiError> {
     Ok(Store::open(&app.db)?)
 }
 
+fn info(app: &App) -> Result<Value, ApiError> {
+    Ok(json!({
+        "db": app.db.display().to_string(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "rules": app.rules.rules.len(),
+        "captures": crate::procmon::captures(&open(app)?)?,
+    }))
+}
+
 fn runs(app: &App) -> Result<Value, ApiError> {
     let store = open(app)?;
     Ok(json!({ "runs": store.runs()?, "comparisons": store.comparisons()? }))
@@ -300,8 +309,13 @@ struct ResultFilter {
     params: Vec<Sql>,
 }
 
-fn result_filter(p: &HashMap<String, String>) -> Result<ResultFilter, ApiError> {
+fn result_filter(app: &App, p: &HashMap<String, String>) -> Result<ResultFilter, ApiError> {
     let c = get_i64(p, "c", -1)?;
+    {
+        // `modified_by` and the process facet read the attribution of this comparison.
+        let _guard = app.attributing.lock().unwrap_or_else(|e| e.into_inner());
+        crate::procmon::ensure_attribution(&open(app)?, c)?;
+    }
     let q = p.get("q").map(String::as_str).unwrap_or("");
     let compiled = query::compile(q, Scope::Results).map_err(bad)?;
     let mut params = compiled.params;
@@ -336,7 +350,7 @@ fn severity_name(rank: i64) -> &'static str {
 fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
     let t = Instant::now();
     let store = open(app)?;
-    let f = result_filter(p)?;
+    let f = result_filter(app, p)?;
     let limit = get_i64(p, "limit", 100)?.clamp(1, MAX_PAGE);
     let offset = get_i64(p, "offset", 0)?.max(0);
     let conn = store.conn();
@@ -355,7 +369,9 @@ fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
         "SELECT r.id, r.identity, r.kind, r.change, r.severity,
                 (SELECT json_group_array(f.rule) FROM
                     (SELECT rule FROM findings f WHERE f.comparison = r.comparison AND f.result = r.id
-                     ORDER BY severity DESC, rule) f)
+                     ORDER BY severity DESC, rule) f),
+                (SELECT json_group_array(t.process) FROM attribution t
+                  WHERE t.comparison = r.comparison AND t.result = r.id)
          FROM {} WHERE {} ORDER BY {} LIMIT ?{} OFFSET ?{}",
         f.from,
         f.filter,
@@ -367,7 +383,9 @@ fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
     let items: Vec<Value> = stmt
         .query_map(params_from_iter(params.iter()), |r| {
             let rules: String = r.get(5)?;
+            let by: String = r.get(6)?;
             Ok(json!({
+                "modified_by": serde_json::from_str::<Value>(&by).unwrap_or(json!([])),
                 "id": r.get::<_, i64>(0)?,
                 "identity": r.get::<_, String>(1)?,
                 "kind": r.get::<_, String>(2)?,
@@ -382,7 +400,7 @@ fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
 
 fn facets(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
     let store = open(app)?;
-    let f = result_filter(p)?;
+    let f = result_filter(app, p)?;
     let conn = store.conn();
     let group = |col: &str| -> Result<Vec<Value>, ApiError> {
         let mut stmt = conn.prepare(&format!(
@@ -424,7 +442,82 @@ fn facets(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
             ]))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(json!({ "severity": severity, "change": change, "kind": kind, "rules": rules }))
+    let mut stmt = conn.prepare(&format!(
+        "SELECT t.process, COUNT(*) FROM {} JOIN attribution t
+           ON t.comparison = r.comparison AND t.result = r.id
+         WHERE {} GROUP BY t.process ORDER BY 2 DESC, 1 LIMIT 30",
+        f.from, f.filter
+    ))?;
+    let processes: Vec<Value> = stmt
+        .query_map(params_from_iter(f.params.iter()), |r| {
+            Ok(json!([r.get::<_, String>(0)?, r.get::<_, i64>(1)?]))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(
+        json!({ "severity": severity, "change": change, "kind": kind, "rules": rules,
+               "processes": processes }),
+    )
+}
+
+/// One level of the matching results as a tree of their `\`-separated identities:
+/// the children of `prefix` (empty for the top level) within `kind`, with counts,
+/// so a folder of 100,000 changes is expanded one level at a time.
+fn tree(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
+    let t = Instant::now();
+    let store = open(app)?;
+    let f = result_filter(app, p)?;
+    let kind = get(p, "kind")?;
+    let prefix = p.get("prefix").map(String::as_str).unwrap_or("");
+    if !prefix.is_empty() && !prefix.ends_with('\\') {
+        return Err(bad(anyhow!("prefix must end with a backslash")));
+    }
+    let limit = get_i64(p, "limit", MAX_PAGE)?.clamp(1, MAX_PAGE);
+    let mut params = f.params.clone();
+    params.push(Sql::Text(kind.to_string()));
+    let k = params.len();
+    params.push(Sql::Text(prefix.to_string()));
+    let pre = params.len();
+    let sql = format!(
+        "WITH m AS (
+           SELECT r.id, r.severity, r.change, substr(r.identity, length(?{pre}) + 1) AS rest
+           FROM {from} WHERE {filter} AND r.kind = ?{k}
+             AND substr(r.identity, 1, length(?{pre})) = ?{pre}),
+         s AS (
+           SELECT *, CASE instr(rest, '\\') WHEN 0 THEN rest
+                     ELSE substr(rest, 1, instr(rest, '\\') - 1) END AS seg
+           FROM m WHERE rest != '')
+         SELECT seg, COUNT(*), MAX(severity),
+                SUM(change = 'created'), SUM(change = 'modified'), SUM(change = 'deleted'),
+                MAX(CASE WHEN instr(rest, '\\') = 0 THEN id END),
+                SUM(instr(rest, '\\') > 0)
+         FROM s GROUP BY seg ORDER BY 3 DESC, 2 DESC, seg",
+        from = f.from,
+        filter = f.filter,
+    );
+    let mut stmt = store.conn().prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(params.iter()), |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "count": r.get::<_, i64>(1)?,
+                "severity": severity_name(r.get(2)?),
+                "created": r.get::<_, i64>(3)?,
+                "modified": r.get::<_, i64>(4)?,
+                "deleted": r.get::<_, i64>(5)?,
+                // The result at exactly prefix + name, if there is one.
+                "id": r.get::<_, Option<i64>>(6)?,
+                // Results below it, so the UI knows whether it expands.
+                "below": r.get::<_, i64>(7)?,
+            }))
+        })
+        .map_err(|e| bad(anyhow!("query failed: {e}")))?;
+    let all: Vec<Value> = rows.collect::<rusqlite::Result<_>>()?;
+    let more = all.len().saturating_sub(limit as usize);
+    let children: Vec<Value> = all.into_iter().take(limit as usize).collect();
+    Ok(
+        json!({ "prefix": prefix, "children": children, "more": more,
+               "ms": t.elapsed().as_millis() }),
+    )
 }
 
 fn blob(store: &Store, id: Option<i64>) -> Result<Value, ApiError> {
@@ -471,7 +564,12 @@ fn result_detail(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiErr
             }))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    let activity = match row.1.parse::<crate::model::Kind>() {
+        Ok(kind) => crate::procmon::events(&store, kind, &row.0)?,
+        Err(_) => Vec::new(),
+    };
     Ok(json!({
+        "activity": activity,
         "id": id,
         "identity": row.0,
         "kind": row.1,
@@ -713,7 +811,7 @@ fn object_detail(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiErr
 /// pipe so arbitrarily large exports never sit in memory.
 fn export(app: &App, req: Request, p: &HashMap<String, String>) {
     let csv = p.get("format").is_some_and(|f| f == "csv");
-    let f = match result_filter(p) {
+    let f = match result_filter(app, p) {
         Ok(f) => f,
         Err(ApiError::Bad(e)) | Err(ApiError::Internal(e)) => {
             let _ = req.respond(Response::from_string(format!("{e:#}")).with_status_code(400));
@@ -739,44 +837,50 @@ fn export(app: &App, req: Request, p: &HashMap<String, String>) {
             let mut stmt = store.conn().prepare(&format!(
                 "SELECT r.identity, r.kind, r.change, r.severity, r.diffs,
                         (SELECT json_group_array(rule) FROM findings f
-                          WHERE f.comparison = r.comparison AND f.result = r.id)
+                          WHERE f.comparison = r.comparison AND f.result = r.id),
+                        (SELECT json_group_array(process) FROM attribution t
+                          WHERE t.comparison = r.comparison AND t.result = r.id)
                  FROM {} WHERE {} ORDER BY {order}",
                 f.from, f.filter
             ))?;
             let mut rows = stmt.query(params_from_iter(f.params.iter()))?;
             let mut out = std::io::BufWriter::new(&mut writer);
             if csv {
-                writeln!(out, "severity,change,kind,path,rules")?;
+                writeln!(out, "severity,change,kind,path,rules,modified_by")?;
             }
             while let Some(r) = rows.next()? {
                 let (identity, kind, change, sev): (String, String, String, i64) =
                     (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
                 let rules: Value = serde_json::from_str(&r.get::<_, String>(5)?)?;
+                let by: Value = serde_json::from_str(&r.get::<_, String>(6)?)?;
                 if csv {
-                    let rules = rules
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        })
-                        .unwrap_or_default();
+                    let join = |v: &Value| {
+                        v.as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(Value::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            })
+                            .unwrap_or_default()
+                    };
                     writeln!(
                         out,
-                        "{},{},{},{},{}",
+                        "{},{},{},{},{},{}",
                         severity_name(sev),
                         change,
                         kind,
                         csv_field(&identity),
-                        csv_field(&rules)
+                        csv_field(&join(&rules)),
+                        csv_field(&join(&by))
                     )?;
                 } else {
                     let diffs: Value = serde_json::from_str(&r.get::<_, String>(4)?)?;
                     serde_json::to_writer(
                         &mut out,
                         &json!({ "identity": identity, "kind": kind, "change": change,
-                                 "severity": severity_name(sev), "rules": rules, "diffs": diffs }),
+                                 "severity": severity_name(sev), "rules": rules,
+                                 "modified_by": by, "diffs": diffs }),
                     )?;
                     out.write_all(b"\n")?;
                 }
@@ -841,5 +945,104 @@ mod tests {
     fn csv_quoting() {
         assert_eq!(csv_field("plain"), "plain");
         assert_eq!(csv_field(r#"C:\a,b "c""#), r#""C:\a,b ""c""""#);
+    }
+
+    #[test]
+    fn tree_expands_one_level_at_a_time() {
+        use crate::model::{Kind, Record};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        let mut store = Store::open(&db).unwrap();
+        let snap = |store: &mut Store, id: &str, files: &[&str]| {
+            store.begin_run(id).unwrap();
+            let recs = files.iter().map(|f| Record {
+                kind: Kind::File,
+                identity: f.to_string(),
+                data: json!({ "size": 1 }),
+            });
+            store.ingest(id, recs).unwrap();
+            store
+                .finish_run(id, &["files".into()], &Default::default(), 0)
+                .unwrap();
+        };
+        snap(&mut store, "a", &[r"C:\old.txt"]);
+        snap(
+            &mut store,
+            "b",
+            &[
+                r"C:\App\bin\a.exe",
+                r"C:\App\bin\b.dll",
+                r"C:\App\readme.txt",
+                r"C:\new.txt",
+            ],
+        );
+        let (rules, hash) = RuleSet::load_hashed(None).unwrap();
+        let c = store.comparison("a", "b", &rules, &hash, None).unwrap();
+        let app = App {
+            db,
+            rules,
+            rules_hash: hash,
+            hosts: vec![],
+            computing: Mutex::new(()),
+            attributing: Mutex::new(()),
+            job: Mutex::new(None),
+        };
+        let level = |prefix: &str, q: &str| -> Vec<(String, i64, i64, bool)> {
+            let p: HashMap<String, String> = [
+                ("c", c.id.to_string()),
+                ("kind", "file".into()),
+                ("prefix", prefix.into()),
+                ("q", q.into()),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+            let v = tree(&app, &p).map_err(|_| "tree failed").unwrap();
+            let mut out: Vec<_> = v["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    (
+                        c["name"].as_str().unwrap().to_string(),
+                        c["count"].as_i64().unwrap(),
+                        c["below"].as_i64().unwrap(),
+                        c["id"].is_i64(),
+                    )
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(level("", ""), vec![("C:".into(), 5, 5, false)]);
+        assert_eq!(
+            level(r"C:\", ""),
+            vec![
+                ("App".into(), 3, 3, false),
+                ("new.txt".into(), 1, 0, true),
+                ("old.txt".into(), 1, 0, true),
+            ]
+        );
+        assert_eq!(
+            level(r"C:\App\", ""),
+            vec![
+                ("bin".into(), 2, 2, false),
+                ("readme.txt".into(), 1, 0, true)
+            ]
+        );
+        // The query filters the tree.
+        assert_eq!(
+            level(r"C:\App\", "path ~ \"\\.exe$\""),
+            vec![("bin".into(), 1, 1, false)]
+        );
+        let p: HashMap<String, String> = [
+            ("c", c.id.to_string()),
+            ("kind", "file".into()),
+            ("prefix", "C:".into()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        assert!(tree(&app, &p).is_err(), "prefix without trailing backslash");
     }
 }
