@@ -2,14 +2,18 @@ pub mod accounts;
 pub mod binaries;
 pub mod certs;
 pub mod com;
+pub mod defender;
 pub mod files;
 pub mod firewall;
 pub mod pe;
 pub mod ports;
 pub mod registry;
+pub mod rights;
 pub mod services;
+pub mod tasks;
 pub mod wifi;
 pub mod win;
+pub mod xml;
 
 use crate::model::Record;
 use anyhow::Result;
@@ -70,6 +74,9 @@ pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, &'static 
         (Kind::Certificate, certs::FIELDS),
         (Kind::Port, ports::FIELDS),
         (Kind::Wifi, wifi::FIELDS),
+        (Kind::Task, tasks::FIELDS),
+        (Kind::Defender, defender::FIELDS),
+        (Kind::Right, rights::FIELDS),
     ])
 }
 

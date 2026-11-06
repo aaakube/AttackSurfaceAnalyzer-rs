@@ -132,7 +132,7 @@ pub fn signable(lower_path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub use ffi::{key_writable_by, security, signature};
+pub use ffi::{key_writable_by, read_with_backup, security, sid_and_name, signature};
 
 #[cfg(windows)]
 mod ffi {
@@ -232,6 +232,65 @@ mod ffi {
         });
         NAMES.with(|n| n.borrow_mut().insert(sid_str.to_string(), result.clone()));
         result
+    }
+
+    /// Reads a file administrators may not open directly (some Windows task
+    /// definitions deny them), the way backup software does: with SeBackupPrivilege
+    /// enabled and backup semantics. Fails where the account lacks the privilege.
+    pub fn read_with_backup(path: &Path) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LUID};
+        use windows_sys::Win32::Security::{
+            AdjustTokenPrivileges, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
+            SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        static ENABLE: std::sync::Once = std::sync::Once::new();
+        ENABLE.call_once(|| unsafe {
+            let mut token: HANDLE = null_mut();
+            if OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            ) == 0
+            {
+                return;
+            }
+            let name: Vec<u16> = "SeBackupPrivilege".encode_utf16().chain(Some(0)).collect();
+            let mut luid = LUID::default();
+            if LookupPrivilegeValueW(null(), name.as_ptr(), &mut luid) != 0 {
+                let tp = TOKEN_PRIVILEGES {
+                    PrivilegeCount: 1,
+                    Privileges: [LUID_AND_ATTRIBUTES {
+                        Luid: luid,
+                        Attributes: SE_PRIVILEGE_ENABLED,
+                    }],
+                };
+                AdjustTokenPrivileges(token, 0, &tp, 0, null_mut(), null_mut());
+            }
+            CloseHandle(token);
+        });
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf)?;
+        Ok(buf)
+    }
+
+    /// A SID as its string form and, when it resolves, `DOMAIN\name`.
+    ///
+    /// # Safety
+    /// `sid` must point to a valid SID.
+    pub unsafe fn sid_and_name(sid: PSID) -> Option<(String, Option<String>)> {
+        unsafe {
+            let s = sid_string(sid)?;
+            let name = account_name(sid, &s);
+            Some((s, name))
+        }
     }
 
     /// Low-privileged principals that can modify a registry key (`HKLM\...` or

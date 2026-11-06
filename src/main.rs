@@ -70,7 +70,7 @@ struct CollectArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi"
+        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights"
     )]
     collectors: Vec<CollectorName>,
     /// Directories the file collector walks (repeatable). Defaults to the system drive.
@@ -110,6 +110,9 @@ enum CollectorName {
     Certificates,
     Ports,
     Wifi,
+    Tasks,
+    Defender,
+    Rights,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -211,6 +214,9 @@ pub(crate) fn kinds_of(collector: &str) -> &'static [Kind] {
         "certificates" => &[Kind::Certificate],
         "ports" => &[Kind::Port],
         "wifi" => &[Kind::Wifi],
+        "tasks" => &[Kind::Task],
+        "defender" => &[Kind::Defender],
+        "rights" => &[Kind::Right],
         _ => &[],
     }
 }
@@ -312,6 +318,20 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
                 signatures,
                 threads,
             })),
+            // Reads the task definition files, so it runs anywhere.
+            CollectorName::Tasks => selected.push(Box::new(collectors::tasks::TasksCollector {
+                root: collectors::tasks::default_root(),
+                threads,
+                signatures,
+            })),
+            #[cfg(windows)]
+            CollectorName::Defender => {
+                selected.push(Box::new(collectors::defender::DefenderCollector {
+                    reg: collectors::registry::WinRegistry,
+                }))
+            }
+            #[cfg(windows)]
+            CollectorName::Rights => selected.push(Box::new(collectors::rights::RightsCollector)),
             // Reads profile files, so it runs anywhere (useful against a mounted image).
             CollectorName::Wifi => selected.push(Box::new(collectors::wifi::WifiCollector {
                 root: collectors::wifi::default_root(),

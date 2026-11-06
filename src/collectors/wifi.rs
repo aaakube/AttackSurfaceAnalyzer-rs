@@ -111,7 +111,7 @@ impl Collector for WifiCollector {
                 }
                 match std::fs::read(&path) {
                     Ok(bytes) => {
-                        let text = decode(&bytes);
+                        let text = super::xml::decode(&bytes);
                         match parse_profile(&iface, &text) {
                             Some(p) => sink.emit(Record::new(
                                 Kind::Wifi,
@@ -126,19 +126,6 @@ impl Collector for WifiCollector {
             }
         }
         Ok(())
-    }
-}
-
-/// Profiles are UTF-8, or UTF-16 with a byte-order mark.
-fn decode(b: &[u8]) -> String {
-    if b.starts_with(&[0xFF, 0xFE]) {
-        let w: Vec<u16> = b[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        String::from_utf16_lossy(&w)
-    } else {
-        String::from_utf8_lossy(b.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(b)).into_owned()
     }
 }
 

@@ -19,10 +19,13 @@ pub enum Kind {
     Certificate,
     Port,
     Wifi,
+    Task,
+    Defender,
+    Right,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 14] = [
         Kind::File,
         Kind::Service,
         Kind::Driver,
@@ -34,6 +37,9 @@ impl Kind {
         Kind::Certificate,
         Kind::Port,
         Kind::Wifi,
+        Kind::Task,
+        Kind::Defender,
+        Kind::Right,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -49,6 +55,9 @@ impl Kind {
             Kind::Certificate => "certificate",
             Kind::Port => "port",
             Kind::Wifi => "wifi",
+            Kind::Task => "task",
+            Kind::Defender => "defender",
+            Kind::Right => "right",
         }
     }
 }

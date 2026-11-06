@@ -181,7 +181,7 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
     <div id="help">
       <p><b>Query syntax.</b> Conditions are <code>field op value</code>, combined with <code>and</code>, <code>or</code>, <code>not</code> and parentheses. A bare word searches paths.</p>
       <p>Operators: <code>=</code> <code>!=</code> <code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code> <code>~</code> (regex) <code>has</code> (substring or list item) <code>exists</code> <code>missing</code> <code>changed</code>.
-         Fields: <code>path</code> <code>kind</code> (file, service, driver, firewall, com, registry, user, group, certificate, port, wifi) <code>severity</code> <code>change</code> <code>rule</code> and any object field such as <code>signature.status</code>, <code>pe.aslr</code>, <code>start</code>, <code>account</code>, <code>local_ports</code>, <code>server</code>, <code>values.Debugger</code>.
+         Fields: <code>path</code> <code>kind</code> (file, service, driver, firewall, com, registry, user, group, certificate, port, wifi, task, defender, right) <code>severity</code> <code>change</code> <code>rule</code> and any object field such as <code>signature.status</code>, <code>pe.aslr</code>, <code>start</code>, <code>account</code>, <code>local_ports</code>, <code>server</code>, <code>values.Debugger</code>.
          Strings take no escapes, so write Windows paths as-is. Click a facet, card or object field to add it.</p>
       <p class="hint">Examples (click one):</p>
       <span class="ex">severity >= warning</span>
@@ -199,6 +199,9 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
       <span class="ex">kind = group and privileged and member_sids changed</span>
       <span class="ex">kind = certificate and store = Root and not self_signed</span>
       <span class="ex">kind = port and scope = any and process_signature.status != valid</span>
+      <span class="ex">kind = task and privileged and (binary_writable_by exists or script_host)</span>
+      <span class="ex">kind = defender and type = exclusion</span>
+      <span class="ex">kind = right and unexpected_members exists</span>
       <span class="ex">modified_by ~ "^msiexec" and severity >= warning</span>
       <p class="hint"><code>modified_by</code> needs a Procmon capture: <code>asa procmon import capture.csv</code>.</p>
     </div>
