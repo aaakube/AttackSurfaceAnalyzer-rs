@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>asa — Attack Surface Analyzer</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+  --accent: #2f6fde; --accent-soft: #e8f0fd; --hover: #f1f4f9; --code: #f3f4f6;
+  --critical: #8f1d2c; --error: #d1343f; --warning: #c77700; --info: #2f6fde; --debug: #8a93a3;
+  --created: #1f8a4c; --deleted: #c2364a; --modified: #7a5af8;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #11141a; --panel: #181c24; --text: #e4e7ec; --muted: #98a2b3; --line: #2a303b;
+          --accent: #6d9cf5; --accent-soft: #1d2a44; --hover: #1f2430; --code: #1f2430;
+          --critical: #f0717f; --error: #f0717f; --warning: #f5b544; --info: #6d9cf5; --debug: #8a93a3;
+          --created: #4ecb84; --deleted: #f0717f; --modified: #a990ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header .db { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+nav.tabs { display: flex; gap: 4px; margin-left: 12px; }
+nav.tabs button { border: 0; background: none; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+nav.tabs button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+main { flex: 1; display: flex; min-height: 0; }
+aside { width: 280px; flex: none; border-right: 1px solid var(--line); background: var(--panel); padding: 14px; overflow: auto; }
+aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 18px 0 8px; }
+aside h2:first-child { margin-top: 0; }
+#facets h2:first-child { margin-top: 18px; }
+label.field { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+select, input[type=text] { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+button.primary { margin-top: 10px; width: 100%; padding: 8px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+button.primary:disabled { opacity: .6; cursor: wait; }
+.list-item { padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.list-item:hover { background: var(--hover); }
+.list-item.on { background: var(--accent-soft); }
+.list-item small { display: block; color: var(--muted); font-size: 11px; }
+.facet { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 13px; }
+.facet:hover { background: var(--hover); }
+.facet .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.facet .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+section.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.querybar { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line); align-items: center; }
+.querybar input { flex: 1 1 320px; font-family: ui-monospace, "Cascadia Mono", monospace; font-size: 13px; padding: 9px 11px; }
+.querybar input.err { border-color: var(--error); }
+.querybar select { width: auto; }
+.icon-btn { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px; padding: 8px 11px; cursor: pointer; font: inherit; white-space: nowrap; }
+.status { padding: 6px 18px; font-size: 12px; color: var(--muted); display: flex; gap: 14px; }
+.status .error { color: var(--error); }
+.cards { display: flex; gap: 10px; padding: 12px 18px 0; flex-wrap: wrap; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; cursor: pointer; min-width: 92px; }
+.card .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.card .k { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+.tablewrap { flex: 1; overflow: auto; padding: 0 18px 18px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; table-layout: fixed; }
+th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+tr.row { cursor: pointer; }
+tr.row:hover td { background: var(--hover); }
+tr.row.on td { background: var(--accent-soft); }
+td.path { font-family: ui-monospace, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+.sev { display: inline-block; font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .4px; }
+.sev.critical { color: var(--critical); } .sev.error { color: var(--error); } .sev.warning { color: var(--warning); }
+.sev.info { color: var(--info); } .sev.debug { color: var(--debug); }
+.chg { font-size: 12px; font-weight: 600; }
+.chg.created { color: var(--created); } .chg.deleted { color: var(--deleted); } .chg.modified { color: var(--modified); }
+.spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px;
+           border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%;
+           animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+.progress-card { max-width: 560px; margin: 48px auto; background: var(--panel); border: 1px solid var(--line);
+                 border-radius: 10px; padding: 22px 26px; }
+.progress-card .title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--accent); }
+.progress-card .title b { color: var(--text); }
+.bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+.bar > div { height: 100%; background: var(--accent); border-radius: 4px; transition: width .25s; }
+.kind { display: inline-block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+td.summary { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.rule { display: inline-block; font-size: 11.5px; background: var(--code); border-radius: 4px; padding: 1px 6px; margin: 1px 4px 1px 0; }
+.more { text-align: center; padding: 14px; color: var(--muted); }
+.empty { padding: 40px; text-align: center; color: var(--muted); }
+#detail { width: 40%; max-width: 680px; flex: none; border-left: 1px solid var(--line); background: var(--panel); overflow: auto; display: none; }
+#detail.open { display: block; }
+#detail .head { position: sticky; top: 0; background: var(--panel); padding: 14px 18px; border-bottom: 1px solid var(--line); }
+#detail .head .path { font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; margin: 6px 0 0; }
+#detail .close { float: right; }
+#detail .body { padding: 6px 18px 24px; }
+#detail h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 18px 0 8px; }
+.finding { border-left: 3px solid var(--line); padding: 4px 10px; margin-bottom: 8px; }
+.finding.critical, .finding.error { border-color: var(--error); } .finding.warning { border-color: var(--warning); }
+.finding.info { border-color: var(--info); }
+.finding p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+table.kv { table-layout: auto; }
+table.kv td { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; padding: 5px 8px; }
+table.kv td.k { color: var(--muted); white-space: nowrap; width: 1%; word-break: normal; }
+table.kv tr.clickable { cursor: pointer; }
+table.kv tr.clickable:hover td { background: var(--hover); }
+td.before { color: var(--deleted); } td.after { color: var(--created); }
+.hint { color: var(--muted); font-size: 12px; }
+#help { display: none; position: absolute; right: 18px; top: 108px; width: 520px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; box-shadow: 0 10px 30px rgba(0,0,0,.18); z-index: 10; }
+#help.open { display: block; }
+#help code, .ex { font-family: ui-monospace, monospace; font-size: 12px; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+#help .ex { display: block; margin: 4px 0; cursor: pointer; padding: 4px 8px; }
+#help .ex:hover { background: var(--accent-soft); }
+#help p { margin: 6px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Attack Surface Analyzer</h1>
+  <nav class="tabs">
+    <button id="tab-compare" class="on">Compare</button>
+    <button id="tab-browse">Browse run</button>
+  </nav>
+  <span style="flex:1"></span>
+  <span class="db" id="db"></span>
+</header>
+<main>
+  <aside>
+    <div id="side-compare">
+      <h2>New comparison</h2>
+      <label class="field" for="base">Base (before)</label>
+      <select id="base"></select>
+      <label class="field" for="compare">Compare (after)</label>
+      <select id="compare"></select>
+      <button class="primary" id="go">Compare</button>
+      <h2>Comparisons</h2>
+      <div id="comparisons"></div>
+      <div id="facets"></div>
+    </div>
+    <div id="side-browse" style="display:none">
+      <h2>Run</h2>
+      <div id="runlist"></div>
+    </div>
+  </aside>
+  <section class="content">
+    <div class="querybar">
+      <input type="text" id="q" spellcheck="false" autocomplete="off"
+             placeholder='Filter, e.g.  severity >= warning and kind = service   (press Enter; "/" to focus)'>
+      <select id="sort" title="Sort">
+        <option value="severity">Severity</option>
+        <option value="path">Path</option>
+        <option value="change">Change</option>
+      </select>
+      <button class="icon-btn" id="helpbtn" title="Query syntax">? Syntax</button>
+      <button class="icon-btn" id="export-jsonl" title="Download all matching results">⤓ JSONL</button>
+      <button class="icon-btn" id="export-csv" title="Download all matching results">⤓ CSV</button>
+    </div>
+    <div id="help">
+      <p><b>Query syntax.</b> Conditions are <code>field op value</code>, combined with <code>and</code>, <code>or</code>, <code>not</code> and parentheses. A bare word searches paths.</p>
+      <p>Operators: <code>=</code> <code>!=</code> <code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code> <code>~</code> (regex) <code>has</code> (substring or list item) <code>exists</code> <code>missing</code> <code>changed</code>.
+         Fields: <code>path</code> <code>kind</code> (file, service, driver, firewall, com, registry, user, group, certificate, port, wifi) <code>severity</code> <code>change</code> <code>rule</code> and any object field such as <code>signature.status</code>, <code>pe.aslr</code>, <code>start</code>, <code>account</code>, <code>local_ports</code>, <code>server</code>, <code>values.Debugger</code>.
+         Strings take no escapes, so write Windows paths as-is. Click a facet, card or object field to add it.</p>
+      <p class="hint">Examples (click one):</p>
+      <span class="ex">severity >= warning</span>
+      <span class="ex">signature.status = unsigned and format = pe</span>
+      <span class="ex">rule = "Executable writable by non-admins"</span>
+      <span class="ex">writable_by has Users</span>
+      <span class="ex">path ~ "\\Program Files( \(x86\))?\\Google\\" and change = created</span>
+      <span class="ex">not pe.aslr or not pe.dep</span>
+      <span class="ex">signature.signer changed</span>
+      <span class="ex">kind = service and start = auto and account ~ "localsystem"</span>
+      <span class="ex">kind = firewall and direction = in and action = allow and local_ports missing</span>
+      <span class="ex">kind = com and (elevation or shadows_machine)</span>
+      <span class="ex">kind = registry and path ~ "\\Run$"</span>
+      <span class="ex">unquoted_path or binary_writable_by exists or key_writable_by exists</span>
+      <span class="ex">kind = group and privileged and member_sids changed</span>
+      <span class="ex">kind = certificate and store = Root and not self_signed</span>
+      <span class="ex">kind = port and scope = any and process_signature.status != valid</span>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="status"><span id="count"></span><span id="err" class="error"></span></div>
+    <div class="tablewrap" id="tablewrap">
+      <div class="progress-card" id="progress" role="status" aria-live="polite" style="display:none"></div>
+      <div class="empty" id="placeholder">Pick two runs and press <b>Compare</b>.</div>
+      <table id="table" style="display:none">
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="more" id="more"></div>
+    </div>
+  </section>
+  <section id="detail"></section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const SEVS = ["critical", "error", "warning", "info", "debug"];
+const PAGE = 100;
+
+// Build DOM nodes; text is always set via textContent, never parsed as HTML.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    el.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+
+async function api(path, params, method = "GET") {
+  const qs = new URLSearchParams(params || {}).toString();
+  const res = await fetch(path + (qs ? "?" + qs : ""), { method });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+const state = { mode: "compare", c: null, run: null, q: "", sort: "severity", offset: 0, total: 0, loading: 0, selected: null };
+
+// ---------------------------------------------------------------- URL state
+function saveHash() {
+  const p = new URLSearchParams();
+  p.set("mode", state.mode);
+  if (state.mode === "compare" && state.c) p.set("c", state.c);
+  if (state.mode === "browse" && state.run) p.set("run", state.run);
+  if (state.q) p.set("q", state.q);
+  if (state.sort !== "severity") p.set("sort", state.sort);
+  if (state.selected !== null) p.set("item", state.selected);
+  history.replaceState(null, "", "#" + p.toString());
+}
+function loadHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  state.mode = p.get("mode") === "browse" ? "browse" : "compare";
+  state.c = p.get("c") ? Number(p.get("c")) : null;
+  state.run = p.get("run");
+  state.q = p.get("q") || "";
+  state.sort = p.get("sort") || "severity";
+  state.selected = p.get("item");
+}
+
+// ---------------------------------------------------------------- sidebar
+let runs = [], comparisons = [];
+async function loadRuns() {
+  const r = await api("/api/runs");
+  runs = r.runs; comparisons = r.comparisons;
+  for (const sel of [$("base"), $("compare")]) {
+    const keep = sel.value;
+    sel.replaceChildren(...runs.map((x) => h("option", { value: x.id }, `${x.id}  (${x.objects.toLocaleString()} objects)`)));
+    if (keep) sel.value = keep;
+  }
+  if (!$("base").dataset.init && runs.length >= 2) {
+    $("base").value = runs[runs.length - 2].id; $("compare").value = runs[runs.length - 1].id;
+    $("base").dataset.init = "1";
+  }
+  $("comparisons").replaceChildren(...(comparisons.length ? comparisons.map((c) =>
+    h("div", { class: "list-item" + (c.id === state.c ? " on" : ""), onclick: () => openComparison(c.id) },
+      `${c.base} → ${c.compare}`, h("small", {}, `${c.total.toLocaleString()} changes · ${c.created.replace("T", " ").replace("Z", "")}`)))
+    : [h("div", { class: "hint" }, "None yet.")]));
+  $("runlist").replaceChildren(...runs.map((r) =>
+    h("div", { class: "list-item" + (r.id === state.run ? " on" : ""), onclick: () => openRun(r.id) },
+      r.id, h("small", {}, `${r.objects.toLocaleString()} objects · ${r.created.replace("T", " ").replace("Z", "")}`))));
+}
+
+$("go").addEventListener("click", async () => {
+  const btn = $("go");
+  const base = $("base").value, compare = $("compare").value;
+  btn.disabled = true;
+  btn.replaceChildren(h("span", { class: "spinner" }), "Comparing…");
+  $("err").textContent = "";
+  // A comparison that is already stored returns at once; only show progress when
+  // there is real work, so cached ones don't flash a panel.
+  let done = false, poll = null;
+  const update = async () => {
+    try { const p = await api("/api/progress"); if (p.running && !done) showProgress(p.base, p.compare, p); } catch {}
+  };
+  const show = setTimeout(() => {
+    showProgress(base, compare, null);
+    update();
+    poll = setInterval(update, 250);
+  }, 150);
+  try {
+    const r = await api("/api/compare", { base, compare }, "POST");
+    await loadRuns();
+    openComparison(r.comparison.id);
+  } catch (e) { $("err").textContent = e.message; }
+  finally {
+    done = true; clearTimeout(show); clearInterval(poll); hideProgress();
+    btn.disabled = false; btn.textContent = "Compare";
+  }
+});
+
+function showProgress(base, compare, p) {
+  const el = $("progress");
+  el.style.display = "";
+  $("placeholder").style.display = "none"; $("table").style.display = "none";
+  $("more").textContent = ""; $("cards").replaceChildren(); $("count").textContent = "";
+  const pct = p && p.total ? Math.min(100, Math.floor((p.scanned * 100) / p.total)) : 0;
+  const detail = !p ? "Starting…"
+    : p.scanned >= p.total ? `All ${p.total.toLocaleString()} items scanned · ${p.changes.toLocaleString()} changes · saving results…`
+    : `${pct}% · ${p.scanned.toLocaleString()} of ${p.total.toLocaleString()} items scanned · ${p.changes.toLocaleString()} changes found · ${(p.elapsed_ms / 1000).toFixed(1)} s`;
+  el.replaceChildren(
+    h("div", { class: "title" }, h("span", { class: "spinner" }), "Comparing ", h("b", {}, base), " → ", h("b", {}, compare)),
+    h("div", { class: "bar" }, h("div", { style: `width:${pct}%` })),
+    h("div", { class: "hint" }, detail));
+}
+function hideProgress() { $("progress").style.display = "none"; $("progress").replaceChildren(); }
+
+function setMode(mode) {
+  state.mode = mode;
+  $("tab-compare").classList.toggle("on", mode === "compare");
+  $("tab-browse").classList.toggle("on", mode === "browse");
+  $("side-compare").style.display = mode === "compare" ? "" : "none";
+  $("side-browse").style.display = mode === "browse" ? "" : "none";
+  for (const id of ["sort", "export-jsonl", "export-csv"]) $(id).style.display = mode === "compare" ? "" : "none";
+}
+$("tab-compare").addEventListener("click", () => { closeDetail(); setMode("compare"); state.q = ""; $("q").value = ""; if (state.c) openComparison(state.c); else reset(); });
+$("tab-browse").addEventListener("click", () => { closeDetail(); setMode("browse"); state.q = ""; $("q").value = ""; if (state.run) openRun(state.run); else reset(); });
+
+function reset() {
+  $("table").style.display = "none"; $("placeholder").style.display = "";
+  $("placeholder").textContent = state.mode === "compare" ? "Pick two runs and press Compare." : "Pick a run to browse its objects.";
+  $("cards").replaceChildren(); $("facets").replaceChildren(); $("count").textContent = ""; $("more").textContent = "";
+  saveHash();
+}
+
+function openComparison(id) {
+  state.c = id; state.mode = "compare"; loadRuns(); refresh();
+}
+function openRun(id) {
+  state.run = id; state.mode = "browse"; loadRuns(); refresh();
+}
+
+// ---------------------------------------------------------------- query
+function addClause(clause) {
+  const q = $("q").value.trim();
+  $("q").value = q ? `${q} and ${clause}` : clause;
+  state.q = $("q").value; refresh();
+}
+const quote = (s) => /^[A-Za-z0-9_.\-]+$/.test(s) ? s : (s.includes('"') ? `'${s}'` : `"${s}"`);
+
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { state.q = $("q").value.trim(); refresh(); } });
+$("sort").addEventListener("change", () => { state.sort = $("sort").value; refresh(); });
+$("helpbtn").addEventListener("click", () => $("help").classList.toggle("open"));
+for (const ex of document.querySelectorAll("#help .ex")) {
+  ex.addEventListener("click", () => { $("q").value = ex.textContent; state.q = ex.textContent; $("help").classList.remove("open"); refresh(); });
+}
+for (const fmt of ["jsonl", "csv"]) {
+  $("export-" + fmt).addEventListener("click", () => {
+    if (!state.c) return;
+    location.href = "/export?" + new URLSearchParams({ c: state.c, q: state.q, sort: state.sort, format: fmt });
+  });
+}
+
+let seq = 0;
+async function refresh() {
+  saveHash();
+  setMode(state.mode);
+  closeDetail();
+  $("q").value = state.q; $("sort").value = state.sort;
+  if ((state.mode === "compare" && !state.c) || (state.mode === "browse" && !state.run)) return reset();
+  state.offset = 0; state.total = 0;
+  $("tbody").replaceChildren(); $("err").textContent = ""; $("q").classList.remove("err");
+  $("placeholder").style.display = "none"; $("table").style.display = "";
+  $("thead").replaceChildren(state.mode === "compare"
+    ? h("tr", {}, h("th", { style: "width:92px" }, "Severity"), h("th", { style: "width:84px" }, "Change"), h("th", { style: "width:74px" }, "Kind"), h("th", {}, "Item"), h("th", { style: "width:34%" }, "Findings"))
+    : h("tr", {}, h("th", { style: "width:74px" }, "Kind"), h("th", { style: "width:46%" }, "Item"), h("th", {}, "Summary")));
+  const mySeq = ++seq;
+  if (state.mode === "compare") loadFacets(mySeq);
+  else { $("cards").replaceChildren(); $("facets").replaceChildren(); }
+  await loadMore(mySeq);
+}
+
+async function loadMore(mySeq) {
+  // Only one page load per query at a time (the scroll observer fires repeatedly).
+  // A new query must never be blocked by the previous query's request: that one is
+  // discarded when it returns, so blocking here would leave the table empty.
+  if (state.loading === mySeq) return;
+  state.loading = mySeq;
+  try {
+    const params = state.mode === "compare"
+      ? { c: state.c, q: state.q, sort: state.sort, offset: state.offset, limit: PAGE }
+      : { run: state.run, q: state.q, offset: state.offset, limit: PAGE };
+    const r = await api(state.mode === "compare" ? "/api/results" : "/api/objects", params);
+    if (mySeq !== seq) return;
+    state.total = r.total; state.offset += r.items.length;
+    $("tbody").append(...r.items.map(state.mode === "compare" ? resultRow : objectRow));
+    $("count").textContent = `${r.total.toLocaleString()} ${state.mode === "compare" ? "changes" : "objects"} · ${r.ms} ms`;
+    $("more").textContent = state.offset < state.total ? `Showing ${state.offset.toLocaleString()} of ${state.total.toLocaleString()} — scroll for more` : (r.total ? "" : "Nothing matches.");
+  } catch (e) {
+    if (mySeq === seq) { $("err").textContent = e.message; $("q").classList.add("err"); $("count").textContent = ""; $("more").textContent = ""; }
+  } finally { if (state.loading === mySeq) state.loading = 0; }
+}
+new IntersectionObserver((entries) => {
+  if (entries.some((e) => e.isIntersecting) && state.offset < state.total) loadMore(seq);
+}, { root: $("tablewrap"), rootMargin: "400px" }).observe($("more"));
+
+function resultRow(it) {
+  const tr = h("tr", { class: "row", onclick: () => { select(tr); showResult(it.id); } },
+    h("td", {}, h("span", { class: "sev " + it.severity }, it.severity)),
+    h("td", {}, h("span", { class: "chg " + it.change }, it.change)),
+    h("td", {}, h("span", { class: "kind" }, it.kind)),
+    h("td", { class: "path" }, pathNode(it.identity)),
+    h("td", {}, it.rules.map((r) => h("span", { class: "rule" }, r))));
+  return tr;
+}
+function fmtSize(n) {
+  if (n === null || n === undefined) return "";
+  const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+function objectRow(it) {
+  const tr = h("tr", { class: "row", onclick: () => { select(tr); showObject(it.identity, it.kind); } },
+    h("td", {}, h("span", { class: "kind" }, it.kind)),
+    h("td", { class: "path" }, pathNode(it.identity)),
+    h("td", { class: "summary" }, it.summary));
+  return tr;
+}
+// Paths break after separators instead of mid-name.
+function pathNode(p) {
+  const frag = document.createDocumentFragment();
+  for (const part of p.split(/(?<=[\\/])/)) { frag.append(part, h("wbr")); }
+  return frag;
+}
+function select(tr) {
+  for (const x of document.querySelectorAll("tr.row.on")) x.classList.remove("on");
+  tr.classList.add("on");
+}
+
+async function loadFacets(mySeq) {
+  let f;
+  try { f = await api("/api/facets", { c: state.c, q: state.q }); } catch { return; }
+  if (mySeq !== seq) return;
+  const sevCounts = Object.fromEntries(f.severity);
+  $("cards").replaceChildren(...SEVS.map((s) =>
+    h("div", { class: "card", onclick: () => addClause(`severity = ${s}`) },
+      h("div", { class: "v" }, (sevCounts[s] || 0).toLocaleString()), h("div", { class: "k sev " + s }, s))));
+  const block = (title, rows) => rows.length ? [h("h2", {}, title), ...rows] : [];
+  $("facets").replaceChildren(
+    ...block("Kind", (f.kind || []).map(([k, n]) => h("div", { class: "facet", onclick: () => addClause(`kind = ${k}`) },
+      h("span", { class: "name" }, h("span", { class: "kind" }, k)), h("span", { class: "n" }, n.toLocaleString())))),
+    ...block("Change", f.change.map(([k, n]) => h("div", { class: "facet", onclick: () => addClause(`change = ${k}`) },
+      h("span", { class: "name chg " + k }, k), h("span", { class: "n" }, n.toLocaleString())))),
+    ...block("Rules", f.rules.map(([rule, sev, n]) => h("div", { class: "facet", title: rule, onclick: () => addClause(`rule = ${quote(rule)}`) },
+      h("span", { class: "name" }, h("span", { class: "sev " + sev }, "● "), rule), h("span", { class: "n" }, n.toLocaleString())))));
+}
+
+// ---------------------------------------------------------------- detail
+function closeDetail() {
+  $("detail").classList.remove("open"); $("detail").replaceChildren();
+  if (state.selected !== null) { state.selected = null; saveHash(); }
+}
+
+// Flattens an object into dotted paths so each field can be clicked into a query.
+function flatten(obj, prefix = "", out = []) {
+  for (const [k, v] of Object.entries(obj || {})) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) flatten(v, path, out);
+    else out.push([path, v]);
+  }
+  return out;
+}
+function clauseFor(field, v) {
+  if (Array.isArray(v)) return v.length ? `${field} has ${quote(String(v[0]))}` : `${field} missing`;
+  if (typeof v === "boolean") return v ? field : `not ${field}`;
+  if (typeof v === "number") return `${field} = ${v}`;
+  return `${field} = ${quote(String(v))}`;
+}
+const show = (v) => v === null || v === undefined ? "∅" : Array.isArray(v) ? v.join(", ") : String(v);
+
+function objectTable(obj, scope) {
+  return h("table", { class: "kv" }, flatten(obj).map(([k, v]) =>
+    h("tr", { class: "clickable", title: "Add to query: " + clauseFor(k, v), onclick: () => addClause(clauseFor(k, v)) },
+      h("td", { class: "k" }, k), h("td", {}, show(v)))));
+}
+
+function detailShell(title, badges) {
+  const d = $("detail");
+  d.classList.add("open");
+  const body = h("div", { class: "body" });
+  d.replaceChildren(h("div", { class: "head" },
+    h("button", { class: "icon-btn close", onclick: closeDetail }, "✕"),
+    badges, h("p", { class: "path" }, title)), body);
+  return body;
+}
+
+async function showResult(id) {
+  state.selected = String(id); saveHash();
+  let r;
+  try { r = await api("/api/result", { c: state.c, id }); } catch (e) { $("err").textContent = e.message; return; }
+  const body = detailShell(r.identity, h("div", {},
+    h("span", { class: "sev " + r.severity }, r.severity), "  ", h("span", { class: "chg " + r.change }, r.change), "  ",
+    h("span", { class: "hint" }, r.kind)));
+  if (r.findings.length) {
+    body.append(h("h3", {}, "Findings"), ...r.findings.map((f) =>
+      h("div", { class: "finding " + f.severity }, h("span", { class: "sev " + f.severity }, f.severity), "  ", h("b", {}, f.rule),
+        f.description ? h("p", {}, f.description) : null)));
+  }
+  if (r.diffs.length) {
+    body.append(h("h3", {}, "Changed fields"), h("table", { class: "kv" },
+      h("tr", {}, h("td", { class: "k" }, "field"), h("td", { class: "k" }, "before"), h("td", { class: "k" }, "after")),
+      r.diffs.map((d) => h("tr", { class: "clickable", title: `Add to query: ${d.field} changed`, onclick: () => addClause(`${d.field} changed`) },
+        h("td", { class: "k" }, d.field), h("td", { class: "before" }, show(d.before)), h("td", { class: "after" }, show(d.after))))));
+  }
+  if (r.compare) body.append(h("h3", {}, r.base ? "After" : "Object"), objectTable(r.compare));
+  if (r.base) body.append(h("h3", {}, r.compare ? "Before" : "Object (deleted)"), objectTable(r.base));
+  body.append(h("p", { class: "hint" }, "Click any field to add it to the query."));
+}
+
+async function showObject(identity, kind) {
+  state.selected = identity; saveHash();
+  let r;
+  try { r = await api("/api/object", kind ? { run: state.run, identity, kind } : { run: state.run, identity }); } catch (e) { $("err").textContent = e.message; return; }
+  const body = detailShell(r.identity, h("span", { class: "hint" }, `run ${state.run}`));
+  body.append(h("h3", {}, "Object"), objectTable(r.data), h("p", { class: "hint" }, "Click any field to add it to the query."));
+}
+
+// ---------------------------------------------------------------- start
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeDetail(); $("help").classList.remove("open"); }
+  if (e.key === "/" && document.activeElement !== $("q")) { e.preventDefault(); $("q").focus(); }
+});
+(async () => {
+  const info = await api("/api/info");
+  $("db").textContent = `${info.db} · ${info.rules} rules · v${info.version}`;
+  loadHash();
+  const item = state.selected;
+  await loadRuns();
+  await refresh();
+  // Deep link to one item: #...&item=<result id or object path>
+  if (item !== null) state.mode === "compare" ? showResult(Number(item)) : showObject(item);
+})();
+</script>
+</body>
+</html>

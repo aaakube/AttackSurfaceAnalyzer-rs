@@ -1,0 +1,883 @@
+# Built-in rules for Windows. Override with `asa diff --rules my-rules.yaml`.
+# Validate a rules file with `asa rules check <file>`.
+#
+# Conditions: all / any / not, or { field: <path>, <op>: <value> } with
+# op one of: eq ne in lt le gt ge contains starts_with ends_with regex exists changed.
+# List values for contains / starts_with / ends_with / regex mean "any of".
+# Windows paths are case-insensitive: start path regexes with (?i).
+# In single-quoted YAML, a literal backslash in a regex is written '\\'.
+
+# Severity of a change that no rule matches.
+defaults:
+  file: info
+  service: info
+  driver: warning
+  firewall: info
+  com: info
+  registry: info
+  user: warning
+  group: info
+  certificate: info
+  port: info
+  wifi: info
+
+rules:
+  # ---------------------------------------------------------------- signatures
+  - name: Tampered signed file
+    description: The Authenticode signature no longer matches the file's contents.
+    severity: critical
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: signature.status, in: [invalid, revoked, distrusted] }
+
+  - name: Unsigned executable in system location
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: signature.status, eq: unsigned }
+        - { field: path, regex: '(?i)^[a-z]:\\(windows|program files|program files \(x86\))\\' }
+
+  - name: Unsigned executable
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: format, eq: pe }
+        - { field: signature.status, eq: unsigned }
+
+  - name: Untrusted or expired signature
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: signature.status, in: [untrusted, expired] }
+
+  - name: Signer changed
+    description: A binary is now signed by a different publisher.
+    severity: error
+    kinds: [file]
+    changes: [modified]
+    when:
+      all:
+        - { field: signature.signer, changed: true }
+        - { field: signature.signer, exists: true }
+
+  - name: Signature removed
+    severity: error
+    kinds: [file]
+    changes: [modified]
+    when:
+      all:
+        - { field: signature.status, changed: true }
+        - { field: signature.status, eq: unsigned }
+
+  # ---------------------------------------------------------------- binary hardening
+  - name: Missing ASLR
+    description: The image cannot be relocated (no DYNAMIC_BASE, or relocations stripped).
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: pe.aslr, eq: false }
+        - { field: pe.dotnet, eq: false }
+
+  - name: Missing DEP
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: pe.dep, eq: false }
+        - { field: pe.dotnet, eq: false }
+
+  - name: Missing Control Flow Guard
+    severity: info
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: pe.cfg, eq: false }
+        - { field: pe.dotnet, eq: false }
+        - { field: pe.subsystem, ne: native }
+
+  - name: Signed binary without integrity enforcement
+    severity: debug
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: signature.status, eq: valid }
+        - { field: pe.force_integrity, eq: false }
+
+  # ---------------------------------------------------------------- permissions
+  - name: Executable writable by non-admins
+    description: Any user can replace this binary; whoever runs it next runs attacker code.
+    severity: critical
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: writable_by, exists: true }
+
+  - name: Writable directory in a protected location
+    description: Non-admins can plant files (e.g. DLLs) where privileged programs load them from.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: file_type, eq: dir }
+        - { field: writable_by, exists: true }
+        - { field: path, regex: '(?i)^[a-z]:\\(windows|program files|program files \(x86\))(\\|$)' }
+        # Directories Windows makes user-writable on purpose.
+        - not:
+            field: path
+            regex: '(?i)^[a-z]:\\windows\\(temp|tasks|tracing|registration\\crmlog|system32\\(spool\\(drivers\\color|printers)|tasks|com\\dmp)|syswow64\\(tasks|com\\dmp))(\\|$)'
+
+  - name: Permissions changed
+    severity: info
+    kinds: [file]
+    changes: [modified]
+    when:
+      any:
+        - { field: sddl, changed: true }
+        - { field: writable_by, changed: true }
+
+  - name: Ownership changed
+    severity: warning
+    kinds: [file]
+    changes: [modified]
+    when: { field: owner_sid, changed: true }
+
+  # ---------------------------------------------------------------- locations
+  - name: New or modified driver
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      any:
+        - { field: pe.subsystem, eq: native }
+        - { field: path, regex: '(?i)\\system32\\drivers\\[^\\]+\.sys$' }
+
+  - name: Executable in user-writable location
+    description: Malware and droppers favour locations any user can write to.
+    severity: warning
+    kinds: [file]
+    changes: [created]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - field: path
+          regex:
+            - '(?i)\\appdata\\(local|roaming|locallow)\\'
+            - '(?i)^[a-z]:\\users\\public\\'
+            - '(?i)^[a-z]:\\programdata\\'
+            - '(?i)\\temp\\'
+
+  - name: Hidden executable
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: hidden, eq: true }
+        - { field: system, eq: false }
+
+  - name: Startup folder item
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '(?i)\\start menu\\programs\\startup\\.' }
+
+  - name: Scheduled task definition changed
+    severity: warning
+    kinds: [file]
+    when:
+      all:
+        - { field: path, regex: '(?i)^[a-z]:\\windows\\(system32|syswow64)\\tasks\\.' }
+        # Windows rewrites its own task definitions routinely.
+        - not:
+            all:
+              - { field: change, eq: modified }
+              - { field: path, regex: '(?i)\\tasks\\microsoft\\windows\\' }
+
+  - name: Windows scheduled task rewritten
+    severity: info
+    kinds: [file]
+    changes: [modified]
+    when: { field: path, regex: '(?i)^[a-z]:\\windows\\(system32|syswow64)\\tasks\\microsoft\\windows\\' }
+
+  - name: Hosts file modified
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '(?i)^[a-z]:\\windows\\system32\\drivers\\etc\\hosts$' }
+
+  - name: PowerShell profile changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '(?i)\\(windows)?powershell\\(v1\.0\\)?([a-z_]*_)?profile\.ps1$' }
+
+  - name: Modified system executable
+    description: A binary or script under C:\Windows was replaced or patched.
+    severity: warning
+    kinds: [file]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)^[a-z]:\\windows\\' }
+        - { field: executable, eq: true }
+
+  - name: Modified system file
+    severity: info
+    kinds: [file]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)^[a-z]:\\windows\\' }
+        - { field: file_type, eq: file }
+        - { field: executable, eq: false }
+        # Data Windows rewrites constantly (logs, caches, counters, WMI, licensing).
+        - not:
+            field: path
+            regex:
+              - '(?i)^[a-z]:\\windows\\(appcompat\\programs|appreadiness|debug|logs|prefetch|servicing|serviceprofiles\\(local|network)service|softwaredistribution|temp|inf\\wmiaprpl)\\'
+              - '(?i)^[a-z]:\\windows\\(system32|syswow64)\\(catroot2|config|logfiles|sleepstudy|sru|winevt|wdi|spp\\store|wbem\\(performance|repository))\\'
+              - '(?i)^[a-z]:\\windows\\(system32|syswow64)\\(perf[a-z]?\d+\.dat|perfstringbackup\.ini)$'
+              - '(?i)^[a-z]:\\windows\\(bootstat\.dat|.*\.log)$'
+              - '(?i)^[a-z]:\\windows\\microsoft\.net\\.*\.log$'
+
+  - name: Modified program file
+    severity: info
+    kinds: [file]
+    changes: [modified]
+    when: { field: path, regex: '(?i)^[a-z]:\\program files( \(x86\))?\\' }
+
+  - name: Certificate or key store file
+    severity: info
+    kinds: [file]
+    when: { field: path, regex: '(?i)\.(cer|crt|der|pem|pfx|p12|keystore|jks)$' }
+
+  # ---------------------------------------------------------------- services
+  - name: Service binary writable by non-admins
+    description: Any user can replace the program a service runs, usually as SYSTEM.
+    severity: critical
+    kinds: [service, driver]
+    changes: [created, modified]
+    when: { field: binary_writable_by, exists: true }
+
+  - name: Service registry key writable by non-admins
+    description: Any user can repoint the service's ImagePath and get code run by the service manager.
+    severity: critical
+    kinds: [service, driver]
+    changes: [created, modified]
+    when: { field: key_writable_by, exists: true }
+
+  - name: Unquoted service path with spaces
+    description: Windows tries each space-separated prefix (C:\Program.exe, ...) before the real binary.
+    severity: error
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: unquoted_path, eq: true }
+
+  - name: Service binary signature invalid
+    severity: critical
+    kinds: [service, driver]
+    changes: [created, modified]
+    when: { field: binary_signature.status, in: [invalid, revoked, distrusted] }
+
+  - name: Unsigned service binary
+    severity: error
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: binary_signature.status, eq: unsigned }
+
+  - name: Service binary in user-writable location
+    severity: error
+    kinds: [service, driver]
+    changes: [created, modified]
+    when:
+      field: binary
+      regex: ['(?i)\\appdata\\', '(?i)^[a-z]:\\users\\public\\', '(?i)^[a-z]:\\programdata\\', '(?i)\\temp\\']
+
+  - name: New automatic service
+    severity: warning
+    kinds: [service]
+    changes: [created]
+    when: { field: start, in: [auto, boot, system] }
+
+  - name: New service running as SYSTEM
+    severity: warning
+    kinds: [service]
+    changes: [created]
+    when:
+      any:
+        - { field: account, regex: '(?i)^(localsystem|nt authority\\system)$' }
+        # Kernel-launched and shared services without an account run as SYSTEM.
+        - all:
+            - { field: account, exists: false }
+            - { field: type, in: [own_process, shared_process] }
+
+  - name: Service configuration changed
+    severity: error
+    kinds: [service]
+    changes: [modified]
+    when:
+      any:
+        - { field: image_path, changed: true }
+        - { field: service_dll, changed: true }
+        - { field: account, changed: true }
+
+  - name: Service set to start automatically
+    severity: warning
+    kinds: [service]
+    changes: [modified]
+    when:
+      all:
+        - { field: start, changed: true }
+        - { field: start, in: [auto, boot, system] }
+
+  - name: Service failure command set
+    description: The command runs whenever the service crashes, a known persistence spot.
+    severity: warning
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: failure_command, exists: true }
+
+  - name: Automatic service binary missing
+    description: If a non-admin can create the missing file, the service will run it.
+    severity: warning
+    kinds: [service, driver]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: binary_missing, eq: true }
+        - { field: start, in: [auto, boot, system] }
+
+  # ---------------------------------------------------------------- drivers
+  - name: New driver
+    severity: error
+    kinds: [driver]
+    changes: [created]
+
+  - name: Driver not validly signed
+    severity: critical
+    kinds: [driver]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: binary_missing, eq: false }
+        - { field: binary_signature.status, ne: valid }
+
+  - name: Driver configuration changed
+    severity: error
+    kinds: [driver]
+    changes: [modified]
+    when:
+      any:
+        - { field: image_path, changed: true }
+        - { field: start, changed: true }
+
+  # ---------------------------------------------------------------- firewall
+  - name: Firewall disabled
+    severity: critical
+    kinds: [firewall]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: type, eq: profile }
+        - { field: firewall_enabled, eq: false }
+
+  - name: Firewall allows inbound by default
+    severity: critical
+    kinds: [firewall]
+    changes: [created, modified]
+    when: { field: default_inbound, eq: allow }
+
+  - name: Inbound rule open to any port
+    description: An enabled allow rule with no program, service or port restriction.
+    severity: error
+    kinds: [firewall]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: type, eq: rule }
+        - { field: direction, eq: in }
+        - { field: action, eq: allow }
+        - { field: enabled, eq: true }
+        - { field: local_ports, exists: false }
+        - { field: program, exists: false }
+        - { field: service, exists: false }
+
+  - name: New inbound allow rule
+    severity: warning
+    kinds: [firewall]
+    changes: [created]
+    when:
+      all:
+        - { field: type, eq: rule }
+        - { field: direction, eq: in }
+        - { field: action, eq: allow }
+        - { field: enabled, eq: true }
+
+  - name: Inbound allow rule enabled
+    severity: warning
+    kinds: [firewall]
+    changes: [modified]
+    when:
+      all:
+        - { field: enabled, changed: true }
+        - { field: enabled, eq: true }
+        - { field: direction, eq: in }
+        - { field: action, eq: allow }
+
+  - name: Firewall rule changed
+    severity: warning
+    kinds: [firewall]
+    changes: [modified]
+    when:
+      any:
+        - { field: action, changed: true }
+        - { field: program, changed: true }
+        - { field: local_ports, changed: true }
+        - { field: remote_addresses, changed: true }
+        - { field: profiles, changed: true }
+
+  # ---------------------------------------------------------------- COM
+  - name: Per-user COM class shadows a machine class
+    description: COM hijacking; the user's registration wins over the system one in that user's processes.
+    severity: critical
+    kinds: [com]
+    changes: [created, modified]
+    when: { field: shadows_machine, eq: true }
+
+  - name: COM server writable by non-admins
+    severity: critical
+    kinds: [com]
+    changes: [created, modified]
+    when: { field: server_writable_by, exists: true }
+
+  - name: Elevation-enabled COM class
+    description: Can be activated elevated through the COM elevation moniker.
+    severity: error
+    kinds: [com]
+    changes: [created, modified]
+    when: { field: elevation, eq: true }
+
+  - name: COM server runs as a service or another identity
+    severity: warning
+    kinds: [com]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: type, eq: appid }
+        - any:
+            - { field: local_service, exists: true }
+            - { field: run_as, exists: true }
+
+  - name: Unsigned COM server
+    severity: warning
+    kinds: [com]
+    changes: [created, modified]
+    when: { field: server_signature.status, eq: unsigned }
+
+  - name: COM server changed
+    severity: warning
+    kinds: [com]
+    changes: [modified]
+    when:
+      any:
+        - { field: server, changed: true }
+        - { field: treat_as, changed: true }
+
+  - name: COM permissions changed
+    severity: warning
+    kinds: [com]
+    changes: [modified]
+    when:
+      any:
+        - { field: launch_permission, changed: true }
+        - { field: access_permission, changed: true }
+
+  - name: New COM registration
+    severity: info
+    kinds: [com]
+    changes: [created]
+
+  # ---------------------------------------------------------------- registry
+  - name: Registry autorun location writable by non-admins
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when: { field: writable_by, exists: true }
+
+  - name: Autorun entry added or changed
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\(Run|RunOnce|RunOnceEx|RunServices|Policies\\Explorer\\Run)(\\|$)' }
+        - any:
+            - { field: change, eq: created }
+            - { field: values, changed: true }
+
+  - name: Image File Execution Options debugger
+    description: The debugger runs instead of the target program whenever it starts.
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Image File Execution Options\\' }
+        - { field: values.Debugger, exists: true }
+
+  - name: Silent process exit monitor
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\SilentProcessExit\\' }
+        - { field: values.MonitorProcess, exists: true }
+
+  - name: AppInit DLLs set
+    description: Loaded into every process that loads user32.dll.
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Windows NT\\CurrentVersion\\Windows$' }
+        - { field: values.AppInit_DLLs, regex: '\S' }
+
+  - name: AppCertDlls set
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Session Manager\\AppCertDlls$' }
+        # The key does not exist by default, so creating it is the usual case.
+        - any:
+            - { field: change, eq: created }
+            - { field: values, changed: true }
+
+  - name: Winlogon shell or userinit changed
+    severity: critical
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Winlogon$' }
+        - any:
+            - { field: values.Shell, changed: true }
+            - { field: values.Userinit, changed: true }
+            - { field: values.Taskman, changed: true }
+
+  - name: LSA packages changed
+    description: Authentication, security and password-notification packages load into LSASS.
+    severity: critical
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Control\\Lsa$' }
+        - any:
+            - { field: values.Security Packages, changed: true }
+            - { field: values.Authentication Packages, changed: true }
+            - { field: values.Notification Packages, changed: true }
+
+  - name: Boot execute changed
+    severity: critical
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Session Manager$' }
+        - { field: values.BootExecute, changed: true }
+
+  - name: KnownDLLs changed
+    severity: error
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\KnownDLLs$' }
+        - { field: values, changed: true }
+
+  - name: COM auto-approval list changed
+    description: Classes listed here elevate without a UAC prompt.
+    severity: error
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\COMAutoApprovalList$' }
+        - { field: values, changed: true }
+
+  - name: Print monitor or security provider added
+    severity: error
+    kinds: [registry]
+    changes: [created]
+    when: { field: path, regex: '(?i)\\Control\\(Print\\Monitors|SecurityProviders)\\' }
+
+  - name: Shell extension or browser helper object added
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      any:
+        - all:
+            - { field: path, regex: '(?i)\\Browser Helper Objects\\' }
+            - { field: change, eq: created }
+        - all:
+            - { field: path, regex: '(?i)\\(Shell Extensions\\Approved|ShellServiceObjectDelayLoad)$' }
+            - { field: values, changed: true }
+
+  - name: Active Setup component added
+    description: Runs once per user at logon.
+    severity: warning
+    kinds: [registry]
+    changes: [created]
+    when: { field: path, regex: '(?i)\\Active Setup\\Installed Components\\' }
+
+  - name: Microsoft Defender disabled by policy
+    severity: critical
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Policies\\Microsoft\\Windows Defender(\\Real-Time Protection)?$' }
+        - any:
+            - { field: values.DisableAntiSpyware, eq: 1 }
+            - { field: values.DisableRealtimeMonitoring, eq: 1 }
+
+  - name: Remote Desktop enabled
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\Control\\Terminal Server$' }
+        - { field: values.fDenyTSConnections, eq: 0 }
+        - { field: values.fDenyTSConnections, changed: true }
+
+  - name: Policy changed
+    severity: info
+    kinds: [registry]
+    when: { field: path, regex: '(?i)\\Policies(\\|$)' }
+
+  - name: Program installed or removed
+    severity: info
+    kinds: [registry]
+    changes: [created, deleted]
+    when: { field: path, regex: '(?i)\\CurrentVersion\\Uninstall\\[^\\]+$' }
+
+  - name: Software vendor key added or removed
+    severity: info
+    kinds: [registry]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)^HKLM\\SOFTWARE(\\WOW6432Node)?$' }
+        - { field: subkeys, changed: true }
+
+  # ---------------------------------------------------------------- users and groups
+  - name: New local account
+    severity: warning
+    kinds: [user]
+    changes: [created]
+
+  - name: Account added to a privileged group
+    description: Members of these groups can take over the machine or get close to it.
+    severity: critical
+    kinds: [group]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - any:
+            - all:
+                - { field: change, eq: created }
+                - { field: member_sids, exists: true }
+            - { field: member_sids, changed: true }
+
+  - name: Built-in Administrator or Guest enabled
+    severity: critical
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: builtin, in: [Administrator, Guest] }
+        - { field: enabled, eq: true }
+        - any:
+            - { field: change, eq: created }
+            - { field: enabled, changed: true }
+
+  - name: Account does not require a password
+    severity: error
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: enabled, eq: true }
+        - { field: password_required, eq: false }
+
+  - name: Password never expires
+    severity: warning
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: enabled, eq: true }
+        - { field: password_expires, eq: false }
+        - any:
+            - { field: change, eq: created }
+            - { field: password_expires, changed: true }
+
+  - name: Account enabled
+    severity: warning
+    kinds: [user]
+    changes: [modified]
+    when:
+      all:
+        - { field: enabled, changed: true }
+        - { field: enabled, eq: true }
+
+  # ---------------------------------------------------------------- certificates
+  - name: New trusted root certificate
+    description: Every certificate it issues is trusted, including for intercepting TLS.
+    severity: critical
+    kinds: [certificate]
+    changes: [created]
+    when: { field: store, in: [Root, AuthRoot] }
+
+  - name: New trusted publisher
+    description: Code signed by this publisher installs and runs without warnings.
+    severity: error
+    kinds: [certificate]
+    changes: [created]
+    when: { field: store, eq: TrustedPublisher }
+
+  - name: Distrusted certificate removed
+    description: A certificate Windows was told never to trust is trusted again.
+    severity: error
+    kinds: [certificate]
+    changes: [deleted]
+    when: { field: store, eq: Disallowed }
+
+  - name: Certificate pushed by policy
+    severity: error
+    kinds: [certificate]
+    changes: [created]
+    when: { field: location, in: [group_policy, enterprise] }
+
+  - name: Weak signature on a trusted certificate
+    severity: warning
+    kinds: [certificate]
+    changes: [created]
+    when:
+      all:
+        - { field: store, in: [Root, AuthRoot, CA, TrustedPublisher] }
+        - { field: signature_algorithm, in: [md5RSA, sha1RSA, sha1DSA, sha1ECDSA] }
+        - { field: self_signed, eq: false }
+
+  - name: New certificate with a private key
+    severity: info
+    kinds: [certificate]
+    changes: [created]
+    when: { field: has_private_key, eq: true }
+
+  # ---------------------------------------------------------------- ports
+  - name: New port listening on all interfaces
+    severity: warning
+    kinds: [port]
+    changes: [created]
+    when:
+      all:
+        - { field: scope, eq: any }
+        - { field: protocol, eq: tcp }
+
+  - name: Listener now reachable from the network
+    description: It used to accept local connections only.
+    severity: error
+    kinds: [port]
+    changes: [modified]
+    when:
+      all:
+        - { field: scope, changed: true }
+        - { field: scope, eq: any }
+
+  - name: Listening program writable by non-admins
+    severity: critical
+    kinds: [port]
+    changes: [created, modified]
+    when: { field: process_writable_by, exists: true }
+
+  - name: Unsigned listening program
+    severity: error
+    kinds: [port]
+    changes: [created, modified]
+    when: { field: process_signature.status, ne: valid }
+
+  - name: Listening program in user-writable location
+    severity: error
+    kinds: [port]
+    changes: [created, modified]
+    when:
+      field: process
+      regex: ['(?i)\\appdata\\', '(?i)^[a-z]:\\users\\public\\', '(?i)^[a-z]:\\programdata\\', '(?i)\\temp\\']
+
+  # ---------------------------------------------------------------- Wi-Fi
+  - name: Open Wi-Fi network saved
+    severity: warning
+    kinds: [wifi]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: authentication, eq: open }
+        - { field: encryption, eq: none }
+
+  - name: Auto-connect to an open Wi-Fi network
+    description: The machine joins any network with this name, which anyone can create.
+    severity: error
+    kinds: [wifi]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: authentication, eq: open }
+        - { field: encryption, eq: none }
+        - { field: connection_mode, eq: auto }
+
+  - name: Weak Wi-Fi security
+    severity: warning
+    kinds: [wifi]
+    changes: [created, modified]
+    when:
+      any:
+        - { field: authentication, in: [shared, WPA, WPAPSK] }
+        - { field: encryption, in: [WEP, TKIP] }
+
+  - name: Wi-Fi key stored unprotected
+    description: The network key sits in clear text in the profile file.
+    severity: error
+    kinds: [wifi]
+    changes: [created, modified]
+    when: { field: key_protected, eq: false }
+
+  - name: Auto-connect to a hidden Wi-Fi network
+    description: The machine broadcasts this network name everywhere while looking for it.
+    severity: warning
+    kinds: [wifi]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: hidden_network, eq: true }
+        - { field: connection_mode, eq: auto }
