@@ -140,8 +140,8 @@ Offline behaviour:
 ## What is collected
 
 `asa collect` runs every collector by default (`files, services, firewall, com, registry, users,
-certificates, ports, wifi`); `--collectors files,services,...` picks some.
-All collectors read the registry and Win32 APIs directly (no PowerShell or WMI), so they are
+certificates, ports, wifi, tasks, defender, rights`); `--collectors files,services,...` picks some.
+All collectors read files, the registry and Win32 APIs directly (no PowerShell or WMI), so they are
 fast and work offline. Runtime state (running/stopped) is deliberately not collected: it
 changes constantly and is not attack surface.
 
@@ -156,6 +156,9 @@ changes constantly and is not attack surface.
 | `group` | `group\<name>` | `sid`, `members`, `member_sids`, `privileged`, `privilege` |
 | `certificate` | `cert\<location>\<store>\<thumbprint>` | `location` (group_policy, enterprise, machine, user — most specific origin), `store`, `subject`, `issuer`, `serial`, `not_before`, `not_after`, `self_signed`, `has_private_key` (the key itself is never read), `key_algorithm`, `key_bits`, `signature_algorithm`, `purposes` |
 | `port` | `tcp\<address>:<port>`, or `tcp\dynamic\<program>` | `protocol`, `address`, `port`, `scope` (any, loopback, specific), `process`, `services`, `process_signature.*`, `process_writable_by`. Listeners on the dynamic range (49152+) get a new port each boot, so they are grouped per program without the port number; PIDs are never stored. |
+| `task` | `task\<task path>` | `path`, `author`, `description`, `enabled`, `hidden`, `run_as` (well-known SIDs as names; absent when it runs as whoever registered it), `run_level` (highest / limited), `logon_type`, `privileged` (SYSTEM, a service account, administrators, or elevated), `triggers` (boot, logon, time, calendar, event, idle, registration, session, ...), `actions`, `binary`, `arguments`, `working_directory`, `com_handler`, `script_host` (cmd, PowerShell, mshta, rundll32, ... where the arguments are what runs), `binary_missing`, `binary_signature.*`, `binary_writable_by`. Parsed from the definitions in `System32\Tasks`; the few that deny administrators are read with backup rights. Run history is left out. |
+| `defender` | `defender\exclusion\<source>\<category>\<value>`, `defender\settings` | exclusions: `source` (local / policy), `category` (path, extension, process, ip, asr, cfa_app), `value`, `writable_by` (for an existing path: who can drop unscanned files there); settings: `realtime_protection`, `behavior_monitoring`, `scan_downloads`, `script_scanning`, `disabled_by_policy`, `tamper_protection`, `cloud_protection`, `sample_submission`, `pua_protection`, `controlled_folder_access`, `asr_rules` (rule GUID → off / block / audit / warn). Policy overrides local, as in Defender. |
+| `right` | `right\<SeXxx>` | `name`, `description`, `sensitive` (amounts to full control: debug, impersonate, backup/restore, load driver, take ownership, act as OS, ...), `members`, `sids`, `unexpected_members` (holders of a sensitive right other than the built-in ones that normally have it). Every right is listed, held or not, so a first grant is a modification. |
 | `wifi` | `wifi\<adapter>\<profile>` | `ssid`, `connection_mode`, `hidden_network`, `authentication`, `encryption`, `uses_802_1x`, `key_type`, `key_protected` (keys are never collected) |
 
 The registry collector covers persistence and policy locations: Run/RunOnce (machine, 32-bit
@@ -294,8 +297,10 @@ really wrote them.
 
 ## Roadmap
 
-Scheduled tasks as parsed objects (today they are seen as files), WMI event subscriptions,
-TPM and key-storage inventory, and custom registry locations from the command line.
+WMI event subscriptions, security options (UAC, WDigest, SMBv1, NTLM levels) as one
+object, `asa record -- setup.exe` (snapshot, Procmon, install, snapshot, import in one
+command), triage (mark findings reviewed or accepted), TPM and key-storage inventory, and
+custom registry locations from the command line.
 
 ## License
 

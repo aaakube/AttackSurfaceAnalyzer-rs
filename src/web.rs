@@ -747,6 +747,47 @@ fn summary(kind: &str, d: &Value) -> String {
             s("process_signature.status").map(|st| format!("program {st}")),
             writable("process_writable_by"),
         ],
+        "task" => vec![
+            s("run_as").or_else(|| Some("registering user".into())),
+            flag("privileged", "PRIVILEGED"),
+            s("triggers").map(|t| format!("on {t}")),
+            s("binary").or_else(|| s("com_handler").map(|c| format!("COM {c}"))),
+            s("binary_signature.status").map(|st| format!("binary {st}")),
+            (d.get("enabled") == Some(&Value::Bool(false))).then(|| "disabled".to_string()),
+            flag("hidden", "hidden"),
+            writable("binary_writable_by"),
+        ],
+        "defender" if s("type").as_deref() == Some("exclusion") => vec![
+            Some(format!(
+                "EXCLUSION ({} {})",
+                s("source").unwrap_or_default(),
+                s("category").unwrap_or_default()
+            )),
+            s("value"),
+            writable("writable_by"),
+        ],
+        "defender" => {
+            let off = |p: &str, label: &str| {
+                (d.get(p) == Some(&Value::Bool(false))).then(|| format!("{label} OFF"))
+            };
+            vec![
+                off("realtime_protection", "real-time protection"),
+                off("behavior_monitoring", "behavior monitoring"),
+                off("scan_downloads", "download scanning"),
+                off("cloud_protection", "cloud protection"),
+                off("tamper_protection", "tamper protection"),
+                flag("disabled_by_policy", "DISABLED BY POLICY"),
+                d.get("asr_rules")
+                    .and_then(Value::as_object)
+                    .map(|m| format!("{} ASR rules", m.len())),
+            ]
+        }
+        "right" => vec![
+            s("description"),
+            flag("sensitive", "sensitive"),
+            s("members").or_else(|| Some("nobody".into())),
+            s("unexpected_members").map(|u| format!("UNEXPECTED: {u}")),
+        ],
         "wifi" => vec![
             s("ssid"),
             Some(format!(

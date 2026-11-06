@@ -213,6 +213,52 @@ pub fn sources(kind: Kind, identity: &str) -> Vec<(String, usize)> {
                 out.push((format!(r"{root}\{store}\Certificates\{thumb}"), 1));
             }
         }
+        Kind::Task => {
+            if let Some(rel) = identity.strip_prefix("task") {
+                let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+                out.push((format!(r"{root}\System32\Tasks{rel}"), 0));
+                out.push((
+                    format!(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree{rel}"),
+                    1,
+                ));
+            }
+        }
+        Kind::Defender => {
+            use crate::collectors::defender::{LOCAL, POLICY};
+            if identity == r"defender\settings" {
+                for base in [LOCAL, POLICY] {
+                    out.push((base.to_string(), 1));
+                    for sub in [
+                        "Real-Time Protection",
+                        "Spynet",
+                        "Features",
+                        r"Windows Defender Exploit Guard\ASR\Rules",
+                        r"Windows Defender Exploit Guard\Controlled Folder Access",
+                    ] {
+                        out.push((format!(r"{base}\{sub}"), 1));
+                    }
+                }
+            } else if let Some(rest) = identity.strip_prefix(r"defender\exclusion\") {
+                let mut it = rest.splitn(3, '\\');
+                if let (Some(source), Some(cat), Some(value)) = (it.next(), it.next(), it.next()) {
+                    let base = if source == "policy" { POLICY } else { LOCAL };
+                    let sub = match cat {
+                        "path" => r"Exclusions\Paths",
+                        "extension" => r"Exclusions\Extensions",
+                        "process" => r"Exclusions\Processes",
+                        "ip" => r"Exclusions\IpAddresses",
+                        "asr" => r"Windows Defender Exploit Guard\ASR\ASROnlyExclusions",
+                        "cfa_app" => {
+                            r"Windows Defender Exploit Guard\Controlled Folder Access\AllowedApplications"
+                        }
+                        _ => return out,
+                    };
+                    out.push((format!(r"{base}\{sub}\{value}"), 0));
+                }
+            }
+        }
+        // User rights live in the SECURITY hive, written by lsass on everyone's behalf.
+        Kind::Right => {}
         // Accounts live in the SAM (written by lsass on everyone's behalf), Wi-Fi
         // profile files are named by GUID, and listening sockets are not file or
         // registry events.

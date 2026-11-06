@@ -559,4 +559,106 @@ rules:
     fn default_rules_parse() {
         RuleSet::parse(DEFAULT_RULES).unwrap();
     }
+
+    #[test]
+    fn default_rules_for_tasks_defender_and_rights() {
+        let rs = RuleSet::load(None).unwrap();
+        let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
+
+        let task = change(
+            Kind::Task,
+            ChangeType::Created,
+            None,
+            Some(
+                json!({"path": r"\Updater", "enabled": true, "hidden": true, "privileged": true,
+                        "script_host": true, "arguments": "-nop -enc AAAA",
+                        "binary_writable_by": ["Users"], "binary_signature": {"status": "unsigned"}}),
+            ),
+        );
+        for r in [
+            "Scheduled task runs a binary writable by non-admins",
+            "Privileged scheduled task runs an unsigned binary",
+            "Encoded or downloading command in scheduled task",
+            "Scheduled task runs a script host",
+            "Privileged scheduled task added",
+            "Hidden scheduled task added",
+        ] {
+            assert!(has(&task, r), "{r}: {:?}", names(&rs, &task));
+        }
+        let ms = change(
+            Kind::Task,
+            ChangeType::Created,
+            None,
+            Some(
+                json!({"path": r"\Microsoft\Windows\Defrag\X", "enabled": true, "script_host": true}),
+            ),
+        );
+        assert!(!has(&ms, "Scheduled task runs a script host"));
+        let gained = change(
+            Kind::Task,
+            ChangeType::Modified,
+            Some(json!({"path": r"\T", "privileged": false})),
+            Some(json!({"path": r"\T", "privileged": true})),
+        );
+        assert!(has(&gained, "Scheduled task gained privileges"));
+
+        let ex = |cat: &str, value: &str, w: Value| {
+            change(
+                Kind::Defender,
+                ChangeType::Created,
+                None,
+                Some(
+                    json!({"type": "exclusion", "source": "local", "category": cat, "value": value, "writable_by": w}),
+                ),
+            )
+        };
+        assert!(has(
+            &ex("path", r"C:\", Value::Null),
+            "Broad Defender exclusion"
+        ));
+        assert!(has(
+            &ex("path", r"C:\Users\bob\AppData\Local\x", Value::Null),
+            "Broad Defender exclusion"
+        ));
+        assert!(has(
+            &ex("extension", ".ps1", Value::Null),
+            "Broad Defender exclusion"
+        ));
+        let narrow = ex("path", r"C:\Program Files\Vendor\db", Value::Null);
+        assert!(!has(&narrow, "Broad Defender exclusion"));
+        assert!(has(&narrow, "Defender exclusion added"));
+        assert!(has(
+            &ex("path", r"D:\build", json!(["Users"])),
+            "Defender exclusion on a folder non-admins can write"
+        ));
+        let off = change(
+            Kind::Defender,
+            ChangeType::Modified,
+            Some(
+                json!({"type": "settings", "realtime_protection": true, "cloud_protection": true}),
+            ),
+            Some(
+                json!({"type": "settings", "realtime_protection": false, "cloud_protection": false}),
+            ),
+        );
+        assert!(has(&off, "Defender real-time protection turned off"));
+        assert!(has(&off, "Defender protection weakened"));
+
+        let right = change(
+            Kind::Right,
+            ChangeType::Modified,
+            Some(json!({"name": "SeDebugPrivilege", "sensitive": true, "members": ["A"]})),
+            Some(
+                json!({"name": "SeDebugPrivilege", "sensitive": true, "members": ["A", "bob"],
+                        "unexpected_members": ["bob"]}),
+            ),
+        );
+        for r in [
+            "Sensitive privilege granted to an unexpected account",
+            "Sensitive user right assignment changed",
+            "User right assignment changed",
+        ] {
+            assert!(has(&right, r), "{r}");
+        }
+    }
 }

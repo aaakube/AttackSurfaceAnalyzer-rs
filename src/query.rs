@@ -291,6 +291,18 @@ const FLAG_FIELDS: &[&str] = &[
     "dynamic",
     "hidden_network",
     "uses_802_1x",
+    // tasks
+    "script_host",
+    // Defender
+    "realtime_protection",
+    "behavior_monitoring",
+    "scan_downloads",
+    "script_scanning",
+    "disabled_by_policy",
+    "tamper_protection",
+    "cloud_protection",
+    // user rights
+    "sensitive",
 ];
 
 fn field_path(field: &str) -> Result<String> {

@@ -20,6 +20,9 @@ defaults:
   certificate: info
   port: info
   wifi: info
+  task: info
+  defender: warning
+  right: info
 
 rules:
   # ---------------------------------------------------------------- signatures
@@ -881,3 +884,186 @@ rules:
       all:
         - { field: hidden_network, eq: true }
         - { field: connection_mode, eq: auto }
+
+  # ---------------------------------------------------------------- scheduled tasks
+  - name: Scheduled task runs a binary writable by non-admins
+    description: Any user can replace the program and have it run by the task, often as SYSTEM.
+    severity: critical
+    kinds: [task]
+    changes: [created, modified]
+    when: { field: binary_writable_by, exists: true }
+
+  - name: Scheduled task binary signature invalid
+    severity: critical
+    kinds: [task]
+    changes: [created, modified]
+    when: { field: binary_signature.status, in: [invalid, revoked, distrusted] }
+
+  - name: Privileged scheduled task runs an unsigned binary
+    severity: error
+    kinds: [task]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - { field: binary_signature.status, eq: unsigned }
+
+  - name: Scheduled task runs a missing binary
+    description: Whoever can create the file gets code run by the task.
+    severity: warning
+    kinds: [task]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: binary_missing, eq: true }
+        - { field: enabled, eq: true }
+
+  - name: Encoded or downloading command in scheduled task
+    severity: error
+    kinds: [task]
+    changes: [created, modified]
+    when: { field: arguments, regex: '(?i)(\s-e(nc|ncodedcommand)?\s|frombase64string|downloadstring|downloadfile|invoke-webrequest|\biwr\b|start-bitstransfer|https?://)' }
+
+  - name: Scheduled task runs a script host
+    description: cmd, PowerShell, mshta, rundll32 and similar run whatever their arguments say.
+    severity: warning
+    kinds: [task]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: script_host, eq: true }
+        - not: { field: path, regex: '(?i)^\\Microsoft\\Windows\\' }
+
+  - name: Privileged scheduled task added
+    description: Runs as SYSTEM, a service account or administrators, or elevated.
+    severity: warning
+    kinds: [task]
+    changes: [created]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - { field: enabled, eq: true }
+
+  - name: Scheduled task gained privileges
+    severity: error
+    kinds: [task]
+    changes: [modified]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - { field: privileged, changed: true }
+
+  - name: Hidden scheduled task added
+    severity: warning
+    kinds: [task]
+    changes: [created]
+    when: { field: hidden, eq: true }
+
+  - name: Scheduled task action changed
+    severity: warning
+    kinds: [task]
+    changes: [modified]
+    when:
+      all:
+        - { field: actions, changed: true }
+        - not: { field: path, regex: '(?i)^\\Microsoft\\Windows\\' }
+
+  - name: Scheduled task added
+    severity: info
+    kinds: [task]
+    changes: [created]
+    when: { field: path, exists: true }
+
+  # ---------------------------------------------------------------- Microsoft Defender
+  - name: Defender exclusion on a folder non-admins can write
+    description: Any user can drop files there that Defender will never scan.
+    severity: critical
+    kinds: [defender]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: type, eq: exclusion }
+        - { field: writable_by, exists: true }
+
+  - name: Broad Defender exclusion
+    description: Excludes a whole drive, a user-writable location, or every file of an executable or script type.
+    severity: critical
+    kinds: [defender]
+    changes: [created]
+    when:
+      any:
+        - all:
+            - { field: category, in: [path, process] }
+            - { field: value, regex: '(?i)^([a-z]:\\?|\*|.*\\(temp|tmp|downloads|appdata|users\\public|programdata)(\\.*)?|%(temp|tmp|appdata|localappdata|userprofile|programdata)%.*)$' }
+        - all:
+            - { field: category, eq: extension }
+            - { field: value, regex: '(?i)^\.?(exe|dll|sys|scr|com|ps1|psm1|bat|cmd|vbs|vbe|js|jse|wsf|hta|msi|lnk|cpl|jar)$' }
+
+  - name: Defender exclusion added
+    severity: error
+    kinds: [defender]
+    changes: [created]
+    when: { field: type, eq: exclusion }
+
+  - name: Defender exclusion removed
+    severity: info
+    kinds: [defender]
+    changes: [deleted]
+    when: { field: type, eq: exclusion }
+
+  - name: Defender real-time protection turned off
+    severity: critical
+    kinds: [defender]
+    changes: [modified]
+    when:
+      any:
+        - all:
+            - { field: realtime_protection, eq: false }
+            - { field: realtime_protection, changed: true }
+        - all:
+            - { field: disabled_by_policy, eq: true }
+            - { field: disabled_by_policy, changed: true }
+
+  - name: Defender protection weakened
+    severity: error
+    kinds: [defender]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: behavior_monitoring, eq: false }, { field: behavior_monitoring, changed: true }]
+        - all: [{ field: scan_downloads, eq: false }, { field: scan_downloads, changed: true }]
+        - all: [{ field: script_scanning, eq: false }, { field: script_scanning, changed: true }]
+        - all: [{ field: cloud_protection, eq: false }, { field: cloud_protection, changed: true }]
+        - all: [{ field: tamper_protection, eq: false }, { field: tamper_protection, changed: true }]
+
+  - name: Attack surface reduction rules changed
+    severity: warning
+    kinds: [defender]
+    changes: [modified]
+    when: { field: asr_rules, changed: true }
+
+  # ---------------------------------------------------------------- user rights
+  - name: Sensitive privilege granted to an unexpected account
+    description: Rights such as SeDebugPrivilege, SeImpersonatePrivilege or SeBackupPrivilege amount to full control of the machine.
+    severity: critical
+    kinds: [right]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: unexpected_members, exists: true }
+        - { field: unexpected_members, changed: true }
+
+  - name: Sensitive user right assignment changed
+    severity: error
+    kinds: [right]
+    changes: [modified]
+    when:
+      all:
+        - { field: sensitive, eq: true }
+        - { field: members, changed: true }
+
+  - name: User right assignment changed
+    severity: warning
+    kinds: [right]
+    changes: [modified]
+    when: { field: members, changed: true }
