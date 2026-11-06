@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Statement, params};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -36,8 +37,88 @@ pub struct RunInfo {
     pub created: String,
     pub platform: String,
     pub collectors: Vec<String>,
+    /// Collectors that were requested but failed, with their error.
+    pub failed: BTreeMap<String, String>,
+    /// Non-fatal problems while collecting (mostly access denied).
+    pub warnings: i64,
     pub complete: bool,
     pub objects: i64,
+}
+
+/// Something a reader of a comparison should know about its coverage.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Notice {
+    /// "warning": items are missing from the comparison; "info": they may be.
+    pub level: &'static str,
+    pub text: String,
+}
+
+/// Kinds a run collected successfully.
+pub fn run_kinds(r: &RunInfo) -> BTreeSet<Kind> {
+    r.collectors
+        .iter()
+        .flat_map(|c| crate::kinds_of(c).iter().copied())
+        .collect()
+}
+
+/// Kinds both runs collected: the only ones worth comparing, since a collector that
+/// failed in one run would otherwise show every one of its objects as created or deleted.
+pub fn common_kinds(base: &RunInfo, compare: &RunInfo) -> BTreeSet<Kind> {
+    run_kinds(base)
+        .intersection(&run_kinds(compare))
+        .copied()
+        .collect()
+}
+
+/// Why a comparison of `base` and `compare` may not show every change: unfinished
+/// runs, failed collectors, kinds collected in only one run, collection warnings.
+pub fn coverage_notices(base: &RunInfo, compare: &RunInfo) -> Vec<Notice> {
+    let warn = |text: String| Notice {
+        level: "warning",
+        text,
+    };
+    let mut out = Vec::new();
+    for r in [base, compare] {
+        if !r.complete {
+            out.push(warn(format!(
+                "Run '{}' did not finish, so none of its items are compared.",
+                r.id
+            )));
+        }
+        for (collector, err) in &r.failed {
+            out.push(warn(format!(
+                "The {collector} collector failed in run '{}': {err}",
+                r.id
+            )));
+        }
+    }
+    if base.complete && compare.complete {
+        let (bk, ck) = (run_kinds(base), run_kinds(compare));
+        for (has, mine, missing, theirs) in [(base, &bk, compare, &ck), (compare, &ck, base, &bk)] {
+            let names: Vec<&str> = mine.difference(theirs).map(|k| k.as_str()).collect();
+            if !names.is_empty() {
+                out.push(warn(format!(
+                    "Not compared: {} (collected in run '{}' but not in '{}').",
+                    names.join(", "),
+                    has.id,
+                    missing.id
+                )));
+            }
+        }
+    }
+    for r in [base, compare] {
+        if r.warnings > 0 {
+            out.push(Notice {
+                level: "info",
+                text: format!(
+                    "Run '{}' had {} collection warning(s), mostly access denied; some items \
+                     may be missing (collect from an elevated prompt to reduce them).",
+                    r.id, r.warnings
+                ),
+            });
+        }
+    }
+    out
 }
 
 /// A raw difference between two runs, before field diffs and rules are applied.
@@ -68,6 +149,8 @@ pub struct ComparisonInfo {
     pub compare: String,
     pub created: String,
     pub total: i64,
+    /// See [`coverage_notices`].
+    pub notices: Vec<Notice>,
 }
 
 impl Store {
@@ -124,6 +207,18 @@ impl Store {
                 path.display()
             ),
         }
+        // Additive columns, so no version bump: older databases gain them on open.
+        let has_failed: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'failed'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        if !has_failed {
+            conn.execute_batch(
+                "ALTER TABLE runs ADD COLUMN failed TEXT NOT NULL DEFAULT '{}';
+                 ALTER TABLE runs ADD COLUMN warnings INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
         // Materialized comparisons for the web UI. Additive, so no version bump: older
         // databases simply gain the tables.
         conn.execute_batch(
@@ -159,7 +254,43 @@ impl Store {
                  description TEXT NOT NULL,
                  PRIMARY KEY (comparison, result, rule)
              ) WITHOUT ROWID;
-             CREATE INDEX IF NOT EXISTS findings_by_rule ON findings (comparison, rule);",
+             CREATE INDEX IF NOT EXISTS findings_by_rule ON findings (comparison, rule);
+             -- Imported Procmon captures (see procmon.rs), and which processes touched
+             -- each result of a comparison, computed lazily per set of captures.
+             CREATE TABLE IF NOT EXISTS captures (
+                 id       INTEGER PRIMARY KEY,
+                 name     TEXT NOT NULL UNIQUE,
+                 source   TEXT NOT NULL,
+                 imported TEXT NOT NULL,
+                 events   INTEGER NOT NULL DEFAULT 0,
+                 rows     INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS activity (
+                 capture      INTEGER NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
+                 seq          INTEGER NOT NULL,
+                 time         TEXT NOT NULL,
+                 process      TEXT NOT NULL,
+                 pid          INTEGER NOT NULL,
+                 operation    TEXT NOT NULL,
+                 path         TEXT NOT NULL,
+                 key          TEXT NOT NULL,
+                 detail       TEXT NOT NULL,
+                 user         TEXT NOT NULL,
+                 command_line TEXT NOT NULL,
+                 count        INTEGER NOT NULL,
+                 PRIMARY KEY (capture, seq)
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS activity_by_key ON activity (key);
+             CREATE TABLE IF NOT EXISTS attribution (
+                 comparison INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+                 result     INTEGER NOT NULL,
+                 process    TEXT NOT NULL,
+                 PRIMARY KEY (comparison, result, process)
+             ) WITHOUT ROWID;
+             CREATE INDEX IF NOT EXISTS attribution_by_process ON attribution (comparison, process);
+             CREATE TABLE IF NOT EXISTS attributed (
+                 comparison INTEGER PRIMARY KEY REFERENCES comparisons(id) ON DELETE CASCADE
+             );",
         )?;
         crate::query::register_functions(&conn)?;
         Ok(Store { conn })
@@ -199,10 +330,7 @@ impl Store {
             None => {}
         }
 
-        let kinds = |r: &RunInfo| -> std::collections::BTreeSet<String> {
-            r.collectors.iter().cloned().collect()
-        };
-        let common: Vec<String> = kinds(&b).intersection(&kinds(&c)).cloned().collect();
+        let common = common_kinds(&b, &c);
 
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -227,10 +355,7 @@ impl Store {
             )?;
             self.diff_each_counted(&b.id, &c.id, progress.map(|p| &p.scanned), |raw| {
                 // Same rule as `asa diff`: only kinds both runs collected.
-                if !common
-                    .iter()
-                    .any(|col| crate::kinds_of(col).contains(&raw.kind))
-                {
+                if !common.contains(&raw.kind) {
                     return Ok(());
                 }
                 let (bb, cb) = (raw.base_blob, raw.compare_blob);
@@ -271,28 +396,26 @@ impl Store {
     }
 
     pub fn comparison_info(&self, id: i64) -> Result<ComparisonInfo> {
-        Ok(self.conn.query_row(
-            "SELECT c.id, b.id, k.id, c.created, c.total FROM comparisons c
-             JOIN runs b ON b.key = c.base JOIN runs k ON k.key = c.compare WHERE c.id = ?1",
-            [id],
-            |r| {
-                Ok(ComparisonInfo {
-                    id: r.get(0)?,
-                    base: r.get(1)?,
-                    compare: r.get(2)?,
-                    created: r.get(3)?,
-                    total: r.get(4)?,
-                })
-            },
-        )?)
+        self.query_comparisons(&format!("c.id = {id}"))?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no comparison {id}"))
     }
 
     pub fn comparisons(&self) -> Result<Vec<ComparisonInfo>> {
-        let mut stmt = self.conn.prepare(
+        self.query_comparisons("c.complete = 1")
+    }
+
+    fn query_comparisons(&self, filter: &str) -> Result<Vec<ComparisonInfo>> {
+        let runs: BTreeMap<String, RunInfo> = self
+            .runs()?
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT c.id, b.id, k.id, c.created, c.total FROM comparisons c
              JOIN runs b ON b.key = c.base JOIN runs k ON k.key = c.compare
-             WHERE c.complete = 1 ORDER BY c.id DESC",
-        )?;
+             WHERE {filter} ORDER BY c.id DESC"
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(ComparisonInfo {
                 id: r.get(0)?,
@@ -300,12 +423,18 @@ impl Store {
                 compare: r.get(2)?,
                 created: r.get(3)?,
                 total: r.get(4)?,
+                notices: Vec::new(),
             })
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut out: Vec<ComparisonInfo> = rows.collect::<rusqlite::Result<_>>()?;
+        for c in &mut out {
+            if let (Some(b), Some(k)) = (runs.get(&c.base), runs.get(&c.compare)) {
+                c.notices = coverage_notices(b, k);
+            }
+        }
+        Ok(out)
     }
 
-    /// Internal key of a run, for queries over its objects.
     pub fn run_key(&self, id: &str) -> Result<i64> {
         Ok(self.run(id)?.key)
     }
@@ -325,11 +454,22 @@ impl Store {
         Ok(())
     }
 
-    /// Marks the run complete, recording which collectors actually succeeded.
-    pub fn finish_run(&self, id: &str, collectors: &[String]) -> Result<()> {
+    /// Marks the run complete, recording which collectors succeeded and which failed.
+    pub fn finish_run(
+        &self,
+        id: &str,
+        collectors: &[String],
+        failed: &BTreeMap<String, String>,
+        warnings: u64,
+    ) -> Result<()> {
         self.conn.execute(
-            "UPDATE runs SET complete = 1, collectors = ?2 WHERE id = ?1",
-            params![id, serde_json::to_string(collectors)?],
+            "UPDATE runs SET complete = 1, collectors = ?2, failed = ?3, warnings = ?4 WHERE id = ?1",
+            params![
+                id,
+                serde_json::to_string(collectors)?,
+                serde_json::to_string(failed)?,
+                warnings as i64
+            ],
         )?;
         Ok(())
     }
@@ -401,17 +541,20 @@ impl Store {
     fn query_runs(&self, filter: &str) -> Result<Vec<RunInfo>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT r.key, r.id, r.created, r.platform, r.collectors, r.complete,
-                    (SELECT COUNT(*) FROM objects o WHERE o.run = r.key)
+                    (SELECT COUNT(*) FROM objects o WHERE o.run = r.key), r.failed, r.warnings
              FROM runs r WHERE {filter} ORDER BY r.created, r.key"
         ))?;
         let rows = stmt.query_map([], |r| {
             let collectors: String = r.get(4)?;
+            let failed: String = r.get(7)?;
             Ok(RunInfo {
                 key: r.get(0)?,
                 id: r.get(1)?,
                 created: r.get(2)?,
                 platform: r.get(3)?,
                 collectors: serde_json::from_str(&collectors).unwrap_or_default(),
+                failed: serde_json::from_str(&failed).unwrap_or_default(),
+                warnings: r.get(8)?,
                 complete: r.get(5)?,
                 objects: r.get(6)?,
             })
@@ -607,7 +750,9 @@ mod tests {
     fn snapshot(store: &mut Store, id: &str, recs: Vec<Record>) {
         store.begin_run(id).unwrap();
         store.ingest(id, recs).unwrap();
-        store.finish_run(id, &["files".into()]).unwrap();
+        store
+            .finish_run(id, &["files".into()], &BTreeMap::new(), 0)
+            .unwrap();
     }
 
     #[test]
@@ -671,5 +816,58 @@ mod tests {
         let s = Store::open(&dir.path().join("t.db")).unwrap();
         s.begin_run("x").unwrap();
         assert!(s.begin_run("x").is_err());
+    }
+
+    #[test]
+    fn coverage_notices_explain_what_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db")).unwrap();
+        s.begin_run("a").unwrap();
+        s.finish_run("a", &["files".into(), "ports".into()], &BTreeMap::new(), 0)
+            .unwrap();
+        s.begin_run("b").unwrap();
+        let failed = BTreeMap::from([("ports".to_string(), "access denied".to_string())]);
+        s.finish_run("b", &["files".into(), "wifi".into()], &failed, 7)
+            .unwrap();
+        s.begin_run("c").unwrap(); // never finished
+        let (a, b, c) = (
+            s.run("a").unwrap(),
+            s.run("b").unwrap(),
+            s.run("c").unwrap(),
+        );
+        assert_eq!(b.failed, failed);
+        assert_eq!(b.warnings, 7);
+
+        let texts: Vec<(&str, String)> = coverage_notices(&a, &b)
+            .into_iter()
+            .map(|n| (n.level, n.text))
+            .collect();
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        assert!(
+            texts[0]
+                .1
+                .contains("ports collector failed in run 'b': access denied")
+        );
+        assert!(
+            texts[1]
+                .1
+                .starts_with("Not compared: port (collected in run 'a' but not in 'b')")
+        );
+        assert!(
+            texts[2]
+                .1
+                .starts_with("Not compared: wifi (collected in run 'b' but not in 'a')")
+        );
+        assert_eq!(texts[3].0, "info");
+        assert!(texts[3].1.contains("7 collection warning"));
+        assert_eq!(
+            common_kinds(&a, &b).into_iter().collect::<Vec<_>>(),
+            vec![Kind::File]
+        );
+
+        let n = coverage_notices(&a, &c);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(n[0].text.contains("'c' did not finish"));
+        assert!(coverage_notices(&a, &a).is_empty());
     }
 }

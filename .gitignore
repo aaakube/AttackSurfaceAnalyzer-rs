@@ -4,3 +4,5 @@
 *.db-shm
 /vm/.data
 /dist
+/vm/.features-run.sh
+__pycache__/

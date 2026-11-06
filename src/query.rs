@@ -21,6 +21,9 @@ use anyhow::{Result, anyhow, bail};
 use rusqlite::types::Value as Sql;
 
 /// What the query runs over, which decides how meta fields map to columns.
+/// Process names from imported Procmon captures (see procmon.rs).
+const MODIFIED_BY: &str = "modified_by";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Rows of `results r` joined to `blobs b` (the compare side, or base if deleted).
@@ -377,6 +380,14 @@ impl Compiler {
                 let j = self.json(field)?;
                 format!("(COALESCE({j}, 0) NOT IN (0, '', 'false'))")
             }
+            Expr::Exists { field, present }
+                if self.scope == Scope::Results && field.eq_ignore_ascii_case(MODIFIED_BY) =>
+            {
+                format!(
+                    "({}EXISTS (SELECT 1 FROM attribution t WHERE t.comparison = r.comparison AND t.result = r.id))",
+                    if *present { "" } else { "NOT " }
+                )
+            }
             Expr::Exists { field, present } => {
                 let x = match self.meta_column(field) {
                     Some(c) => c.to_string(),
@@ -405,6 +416,13 @@ impl Compiler {
                          AND f.result = r.id AND instr(lower(f.rule), {p}) > 0))"
                     ));
                 }
+                if self.scope == Scope::Results && field.eq_ignore_ascii_case(MODIFIED_BY) {
+                    let p = self.bind(Sql::Text(needle));
+                    return Ok(format!(
+                        "(EXISTS (SELECT 1 FROM attribution t WHERE t.comparison = r.comparison \
+                         AND t.result = r.id AND instr(lower(t.process), {p}) > 0))"
+                    ));
+                }
                 if let Some(c) = self.meta_column(field) {
                     let p = self.bind(Sql::Text(needle));
                     return Ok(format!("(instr(lower({c}), {p}) > 0)"));
@@ -431,6 +449,27 @@ impl Compiler {
             }
             let p = self.bind(Sql::Integer(severity_rank(sev)));
             return Ok(format!("(r.severity {op} {p})"));
+        }
+        if self.scope == Scope::Results && lower == MODIFIED_BY {
+            let cond = match op {
+                "=" | "!=" => {
+                    let p = self.bind(Sql::Text(tok_text(value)));
+                    format!("t.process = {p} COLLATE NOCASE")
+                }
+                "~" => {
+                    let p = self.bind(Sql::Text(tok_text(value)));
+                    format!("regexp({p}, t.process)")
+                }
+                _ => bail!("'{op}' does not apply to modified_by (use =, != or ~)"),
+            };
+            let exists = format!(
+                "EXISTS (SELECT 1 FROM attribution t WHERE t.comparison = r.comparison AND t.result = r.id AND {cond})"
+            );
+            return Ok(if op == "!=" {
+                format!("(NOT {exists})")
+            } else {
+                format!("({exists})")
+            });
         }
         if self.scope == Scope::Results && lower == "rule" {
             let cond = match op {

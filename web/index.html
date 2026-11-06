@@ -51,6 +51,12 @@ section.content { flex: 1; display: flex; flex-direction: column; min-width: 0; 
 .icon-btn { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px; padding: 8px 11px; cursor: pointer; font: inherit; white-space: nowrap; }
 .status { padding: 6px 18px; font-size: 12px; color: var(--muted); display: flex; gap: 14px; }
 .status .error { color: var(--error); }
+#notices { padding: 12px 18px 0; display: flex; flex-direction: column; gap: 6px; }
+#notices:empty { display: none; }
+.notice { border: 1px solid var(--line); border-left: 4px solid var(--warning); border-radius: 6px; background: var(--panel); padding: 7px 12px; font-size: 13px; }
+.notice.info { border-left-color: var(--info); color: var(--muted); }
+.notice b { margin-right: 6px; }
+.list-item .warn { color: var(--warning); margin-left: 4px; }
 .cards { display: flex; gap: 10px; padding: 12px 18px 0; flex-wrap: wrap; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; cursor: pointer; min-width: 92px; }
 .card .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -81,6 +87,21 @@ td.path { font-family: ui-monospace, monospace; font-size: 12.5px; overflow-wrap
 .bar > div { height: 100%; background: var(--accent); border-radius: 4px; transition: width .25s; }
 .kind { display: inline-block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 td.summary { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+#tree { padding: 6px 0 24px; font-size: 13px; }
+.tnode { display: flex; align-items: center; gap: 8px; padding: 3px 18px 3px 0; cursor: pointer; white-space: nowrap; }
+.tnode:hover { background: var(--hover); }
+.tnode.on { background: var(--accent-soft); }
+.tnode .caret { width: 14px; color: var(--muted); flex: none; text-align: center; }
+.tnode .tname { font-family: ui-monospace, monospace; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+.tnode .tname.leaf { color: var(--text); } .tnode .tname.dir { font-weight: 600; }
+.tnode .tcount { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+.tnode .tchg { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.tnode .tchg .created { color: var(--created); } .tnode .tchg .modified { color: var(--modified, var(--warning)); } .tnode .tchg .deleted { color: var(--deleted); }
+.tmore { padding: 3px 0; color: var(--muted); font-size: 12px; }
+/* Scroll sideways rather than squeeze paths to a letter wide when the detail panel is open. */
+#table { min-width: 720px; }
+.by { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+table.events td { font-size: 12px; }
 .rule { display: inline-block; font-size: 11.5px; background: var(--code); border-radius: 4px; padding: 1px 6px; margin: 1px 4px 1px 0; }
 .more { text-align: center; padding: 14px; color: var(--muted); }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
@@ -142,6 +163,10 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
     <div class="querybar">
       <input type="text" id="q" spellcheck="false" autocomplete="off"
              placeholder='Filter, e.g.  severity >= warning and kind = service   (press Enter; "/" to focus)'>
+      <select id="view" title="View">
+        <option value="list">List</option>
+        <option value="tree">Tree</option>
+      </select>
       <select id="sort" title="Sort">
         <option value="severity">Severity</option>
         <option value="path">Path</option>
@@ -172,12 +197,16 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
       <span class="ex">kind = group and privileged and member_sids changed</span>
       <span class="ex">kind = certificate and store = Root and not self_signed</span>
       <span class="ex">kind = port and scope = any and process_signature.status != valid</span>
+      <span class="ex">modified_by ~ "^msiexec" and severity >= warning</span>
+      <p class="hint"><code>modified_by</code> needs a Procmon capture: <code>asa procmon import capture.csv</code>.</p>
     </div>
+    <div id="notices" role="status"></div>
     <div class="cards" id="cards"></div>
     <div class="status"><span id="count"></span><span id="err" class="error"></span></div>
     <div class="tablewrap" id="tablewrap">
       <div class="progress-card" id="progress" role="status" aria-live="polite" style="display:none"></div>
       <div class="empty" id="placeholder">Pick two runs and press <b>Compare</b>.</div>
+      <div id="tree" style="display:none"></div>
       <table id="table" style="display:none">
         <thead id="thead"></thead>
         <tbody id="tbody"></tbody>
@@ -216,7 +245,7 @@ async function api(path, params, method = "GET") {
   return body;
 }
 
-const state = { mode: "compare", c: null, run: null, q: "", sort: "severity", offset: 0, total: 0, loading: 0, selected: null };
+const state = { mode: "compare", view: "list", c: null, run: null, q: "", sort: "severity", offset: 0, total: 0, loading: 0, selected: null };
 
 // ---------------------------------------------------------------- URL state
 function saveHash() {
@@ -226,6 +255,7 @@ function saveHash() {
   if (state.mode === "browse" && state.run) p.set("run", state.run);
   if (state.q) p.set("q", state.q);
   if (state.sort !== "severity") p.set("sort", state.sort);
+  if (state.view !== "list") p.set("view", state.view);
   if (state.selected !== null) p.set("item", state.selected);
   history.replaceState(null, "", "#" + p.toString());
 }
@@ -236,6 +266,7 @@ function loadHash() {
   state.run = p.get("run");
   state.q = p.get("q") || "";
   state.sort = p.get("sort") || "severity";
+  state.view = p.get("view") === "tree" ? "tree" : "list";
   state.selected = p.get("item");
 }
 
@@ -255,11 +286,34 @@ async function loadRuns() {
   }
   $("comparisons").replaceChildren(...(comparisons.length ? comparisons.map((c) =>
     h("div", { class: "list-item" + (c.id === state.c ? " on" : ""), onclick: () => openComparison(c.id) },
-      `${c.base} → ${c.compare}`, h("small", {}, `${c.total.toLocaleString()} changes · ${c.created.replace("T", " ").replace("Z", "")}`)))
+      `${c.base} → ${c.compare}`, warnMark(c.notices),
+      h("small", {}, `${c.total.toLocaleString()} changes · ${c.created.replace("T", " ").replace("Z", "")}`)))
     : [h("div", { class: "hint" }, "None yet.")]));
   $("runlist").replaceChildren(...runs.map((r) =>
     h("div", { class: "list-item" + (r.id === state.run ? " on" : ""), onclick: () => openRun(r.id) },
-      r.id, h("small", {}, `${r.objects.toLocaleString()} objects · ${r.created.replace("T", " ").replace("Z", "")}`))));
+      r.id, warnMark(runNotices(r)),
+      h("small", {}, `${r.objects.toLocaleString()} objects · ${r.created.replace("T", " ").replace("Z", "")}`))));
+  renderNotices();
+}
+
+// Coverage problems: computed by the server for comparisons, from the run for browsing.
+function runNotices(r) {
+  const out = [];
+  if (!r.complete) out.push({ level: "warning", text: `Run '${r.id}' did not finish; it may be missing items.` });
+  for (const [c, err] of Object.entries(r.failed || {})) out.push({ level: "warning", text: `The ${c} collector failed in run '${r.id}': ${err}` });
+  if (r.warnings > 0) out.push({ level: "info", text: `Run '${r.id}' had ${r.warnings.toLocaleString()} collection warning(s), mostly access denied; some items may be missing (collect from an elevated prompt to reduce them).` });
+  return out;
+}
+function warnMark(notices) {
+  const w = (notices || []).filter((n) => n.level === "warning");
+  return w.length ? h("span", { class: "warn", title: w.map((n) => n.text).join("\n") }, "⚠") : "";
+}
+function renderNotices() {
+  let list = [];
+  if (state.mode === "compare" && state.c) list = (comparisons.find((c) => c.id === state.c) || {}).notices || [];
+  if (state.mode === "browse" && state.run) list = runNotices(runs.find((r) => r.id === state.run) || { complete: true });
+  $("notices").replaceChildren(...list.map((n) => h("div", { class: "notice " + n.level },
+    h("b", {}, n.level === "warning" ? "⚠ Incomplete" : "ⓘ Note"), n.text)));
 }
 
 $("go").addEventListener("click", async () => {
@@ -293,8 +347,8 @@ $("go").addEventListener("click", async () => {
 function showProgress(base, compare, p) {
   const el = $("progress");
   el.style.display = "";
-  $("placeholder").style.display = "none"; $("table").style.display = "none";
-  $("more").textContent = ""; $("cards").replaceChildren(); $("count").textContent = "";
+  $("placeholder").style.display = "none"; $("table").style.display = "none"; $("tree").style.display = "none";
+  $("more").textContent = ""; $("cards").replaceChildren(); $("count").textContent = ""; $("notices").replaceChildren();
   const pct = p && p.total ? Math.min(100, Math.floor((p.scanned * 100) / p.total)) : 0;
   const detail = !p ? "Starting…"
     : p.scanned >= p.total ? `All ${p.total.toLocaleString()} items scanned · ${p.changes.toLocaleString()} changes · saving results…`
@@ -312,15 +366,17 @@ function setMode(mode) {
   $("tab-browse").classList.toggle("on", mode === "browse");
   $("side-compare").style.display = mode === "compare" ? "" : "none";
   $("side-browse").style.display = mode === "browse" ? "" : "none";
-  for (const id of ["sort", "export-jsonl", "export-csv"]) $(id).style.display = mode === "compare" ? "" : "none";
+  for (const id of ["view", "export-jsonl", "export-csv"]) $(id).style.display = mode === "compare" ? "" : "none";
+  $("sort").style.display = mode === "compare" && state.view === "list" ? "" : "none";
 }
 $("tab-compare").addEventListener("click", () => { closeDetail(); setMode("compare"); state.q = ""; $("q").value = ""; if (state.c) openComparison(state.c); else reset(); });
 $("tab-browse").addEventListener("click", () => { closeDetail(); setMode("browse"); state.q = ""; $("q").value = ""; if (state.run) openRun(state.run); else reset(); });
 
 function reset() {
-  $("table").style.display = "none"; $("placeholder").style.display = "";
+  $("table").style.display = "none"; $("tree").style.display = "none"; $("placeholder").style.display = "";
   $("placeholder").textContent = state.mode === "compare" ? "Pick two runs and press Compare." : "Pick a run to browse its objects.";
   $("cards").replaceChildren(); $("facets").replaceChildren(); $("count").textContent = ""; $("more").textContent = "";
+  $("notices").replaceChildren();
   saveHash();
 }
 
@@ -341,6 +397,7 @@ const quote = (s) => /^[A-Za-z0-9_.\-]+$/.test(s) ? s : (s.includes('"') ? `'${s
 
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { state.q = $("q").value.trim(); refresh(); } });
 $("sort").addEventListener("change", () => { state.sort = $("sort").value; refresh(); });
+$("view").addEventListener("change", () => { state.view = $("view").value; refresh(); });
 $("helpbtn").addEventListener("click", () => $("help").classList.toggle("open"));
 for (const ex of document.querySelectorAll("#help .ex")) {
   ex.addEventListener("click", () => { $("q").value = ex.textContent; state.q = ex.textContent; $("help").classList.remove("open"); refresh(); });
@@ -357,18 +414,22 @@ async function refresh() {
   saveHash();
   setMode(state.mode);
   closeDetail();
-  $("q").value = state.q; $("sort").value = state.sort;
+  $("q").value = state.q; $("sort").value = state.sort; $("view").value = state.view;
   if ((state.mode === "compare" && !state.c) || (state.mode === "browse" && !state.run)) return reset();
   state.offset = 0; state.total = 0;
   $("tbody").replaceChildren(); $("err").textContent = ""; $("q").classList.remove("err");
-  $("placeholder").style.display = "none"; $("table").style.display = "";
+  $("placeholder").style.display = "none";
+  const tree = state.mode === "compare" && state.view === "tree";
+  $("table").style.display = tree ? "none" : ""; $("tree").style.display = tree ? "" : "none";
+  $("tree").replaceChildren(); $("more").textContent = "";
   $("thead").replaceChildren(state.mode === "compare"
     ? h("tr", {}, h("th", { style: "width:92px" }, "Severity"), h("th", { style: "width:84px" }, "Change"), h("th", { style: "width:74px" }, "Kind"), h("th", {}, "Item"), h("th", { style: "width:34%" }, "Findings"))
     : h("tr", {}, h("th", { style: "width:74px" }, "Kind"), h("th", { style: "width:46%" }, "Item"), h("th", {}, "Summary")));
+  renderNotices();
   const mySeq = ++seq;
   if (state.mode === "compare") loadFacets(mySeq);
   else { $("cards").replaceChildren(); $("facets").replaceChildren(); }
-  await loadMore(mySeq);
+  if (tree) await loadTree(mySeq); else await loadMore(mySeq);
 }
 
 async function loadMore(mySeq) {
@@ -395,12 +456,83 @@ new IntersectionObserver((entries) => {
   if (entries.some((e) => e.isIntersecting) && state.offset < state.total) loadMore(seq);
 }, { root: $("tablewrap"), rootMargin: "400px" }).observe($("more"));
 
+// ---------------------------------------------------------------- tree view
+// Results grouped by their `\`-separated paths, one kind per root. Each folder is
+// fetched when opened, so huge comparisons stay fast; chains of single folders are
+// collapsed into one row (C:\Program Files\Vendor\App).
+async function loadTree(mySeq) {
+  let f;
+  try { f = await api("/api/facets", { c: state.c, q: state.q }); }
+  catch (e) { if (mySeq === seq) { $("err").textContent = e.message; $("q").classList.add("err"); } return; }
+  if (mySeq !== seq) return;
+  const total = (f.kind || []).reduce((a, [, n]) => a + n, 0);
+  $("count").textContent = `${total.toLocaleString()} changes · tree`;
+  if (!total) { $("more").textContent = "Nothing matches."; return; }
+  const roots = (f.kind || []).map(([kind, n]) => {
+    const node = treeRow({ kind, prefix: "", label: kind, depth: 0, count: n, isKind: true });
+    $("tree").append(node.row, node.kids);
+    return node;
+  });
+  // Open the first kind (all of them when there are few) so the tree starts useful.
+  for (const r of roots.length <= 3 ? roots : roots.slice(0, 1)) await r.toggle();
+}
+function changeCounts(c) {
+  return h("span", { class: "tchg" },
+    c.created ? h("span", { class: "created" }, `+${c.created.toLocaleString()} `) : null,
+    c.modified ? h("span", { class: "modified" }, `~${c.modified.toLocaleString()} `) : null,
+    c.deleted ? h("span", { class: "deleted" }, `−${c.deleted.toLocaleString()}`) : null);
+}
+function treeRow(n) {
+  const expandable = n.isKind || n.below > 0;
+  const caret = h("span", { class: "caret" }, expandable ? "▸" : "");
+  const kids = h("div", { style: "display:none" });
+  const name = h("span", { class: "tname " + (expandable ? "dir" : "leaf") }, n.label);
+  const row = h("div", { class: "tnode", style: `padding-left:${12 + n.depth * 18}px`, title: n.prefix + (n.isKind ? "" : n.name || "") },
+    caret, n.severity ? h("span", { class: "sev " + n.severity, title: n.severity }, "●") : null, name,
+    h("span", { class: "tcount" }, n.count.toLocaleString()), changeCounts(n));
+  let loaded = false, open = false, prefix = n.isKind ? "" : n.prefix + n.name + "\\";
+  const node = { row, kids, toggle: async () => {
+    if (!expandable) return;
+    open = !open; caret.textContent = open ? "▾" : "▸"; kids.style.display = open ? "" : "none";
+    if (!open || loaded) return;
+    loaded = true;
+    const mySeq = seq;
+    let r;
+    for (;;) {
+      try { r = await api("/api/tree", { c: state.c, q: state.q, kind: n.kind, prefix }); }
+      catch (e) { $("err").textContent = e.message; return; }
+      if (mySeq !== seq) return;
+      // Collapse a folder whose only content is one subfolder.
+      const only = r.children.length === 1 ? r.children[0] : null;
+      if (!only || only.id !== null || !only.below) break;
+      prefix += only.name + "\\";
+      name.textContent = n.isKind ? `${n.label}  ${prefix.slice(0, -1)}` : (name.textContent + "\\" + only.name);
+    }
+    kids.replaceChildren(...r.children.flatMap((c) => {
+      const child = treeRow({ ...c, kind: n.kind, prefix, label: c.name, depth: n.depth + 1 });
+      return [child.row, child.kids];
+    }));
+    if (r.more) kids.append(h("div", { class: "tmore", style: `padding-left:${30 + (n.depth + 1) * 18}px` },
+      `… ${r.more.toLocaleString()} more; narrow the query to see them`));
+  } };
+  row.addEventListener("click", () => {
+    if (n.id !== null && n.id !== undefined) {
+      for (const x of document.querySelectorAll(".tnode.on")) x.classList.remove("on");
+      row.classList.add("on"); showResult(n.id);
+      if (!expandable || open) return;
+    }
+    node.toggle();
+  });
+  return node;
+}
+
 function resultRow(it) {
   const tr = h("tr", { class: "row", onclick: () => { select(tr); showResult(it.id); } },
     h("td", {}, h("span", { class: "sev " + it.severity }, it.severity)),
     h("td", {}, h("span", { class: "chg " + it.change }, it.change)),
     h("td", {}, h("span", { class: "kind" }, it.kind)),
-    h("td", { class: "path" }, pathNode(it.identity)),
+    h("td", { class: "path" }, pathNode(it.identity),
+      it.modified_by && it.modified_by.length ? h("span", { class: "by" }, "by " + it.modified_by.join(", ")) : null),
     h("td", {}, it.rules.map((r) => h("span", { class: "rule" }, r))));
   return tr;
 }
@@ -441,6 +573,8 @@ async function loadFacets(mySeq) {
       h("span", { class: "name" }, h("span", { class: "kind" }, k)), h("span", { class: "n" }, n.toLocaleString())))),
     ...block("Change", f.change.map(([k, n]) => h("div", { class: "facet", onclick: () => addClause(`change = ${k}`) },
       h("span", { class: "name chg " + k }, k), h("span", { class: "n" }, n.toLocaleString())))),
+    ...block("Modified by (Procmon)", (f.processes || []).map(([p, n]) => h("div", { class: "facet", title: p, onclick: () => addClause(`modified_by = ${quote(p)}`) },
+      h("span", { class: "name" }, p), h("span", { class: "n" }, n.toLocaleString())))),
     ...block("Rules", f.rules.map(([rule, sev, n]) => h("div", { class: "facet", title: rule, onclick: () => addClause(`rule = ${quote(rule)}`) },
       h("span", { class: "name" }, h("span", { class: "sev " + sev }, "● "), rule), h("span", { class: "n" }, n.toLocaleString())))));
 }
@@ -502,6 +636,16 @@ async function showResult(id) {
       r.diffs.map((d) => h("tr", { class: "clickable", title: `Add to query: ${d.field} changed`, onclick: () => addClause(`${d.field} changed`) },
         h("td", { class: "k" }, d.field), h("td", { class: "before" }, show(d.before)), h("td", { class: "after" }, show(d.after))))));
   }
+  if (r.activity && r.activity.length) {
+    body.append(h("h3", {}, `Procmon activity (${r.activity.length}${r.activity.length >= 100 ? "+" : ""})`), h("table", { class: "kv events" },
+      h("tr", {}, ...["time", "process", "operation", "path / detail"].map((c) => h("td", { class: "k" }, c))),
+      r.activity.map((e) => h("tr", { class: "clickable", title: `${e.command_line || e.process}\nCapture: ${e.capture}${e.user ? "\nUser: " + e.user : ""}\nAdd to query: modified_by = ${e.process}`,
+          onclick: () => addClause(`modified_by = ${quote(e.process)}`) },
+        h("td", { class: "k" }, e.time),
+        h("td", {}, `${e.process} (${e.pid})`),
+        h("td", {}, e.operation + (e.count > 1 ? ` ×${e.count}` : "")),
+        h("td", {}, e.path, e.detail ? h("span", { class: "by" }, e.detail) : null)))));
+  }
   if (r.compare) body.append(h("h3", {}, r.base ? "After" : "Object"), objectTable(r.compare));
   if (r.base) body.append(h("h3", {}, r.compare ? "Before" : "Object (deleted)"), objectTable(r.base));
   body.append(h("p", { class: "hint" }, "Click any field to add it to the query."));
@@ -522,7 +666,8 @@ document.addEventListener("keydown", (e) => {
 });
 (async () => {
   const info = await api("/api/info");
-  $("db").textContent = `${info.db} · ${info.rules} rules · v${info.version}`;
+  const caps = info.captures || [];
+  $("db").textContent = `${info.db} · ${info.rules} rules${caps.length ? ` · ${caps.length} Procmon capture${caps.length > 1 ? "s" : ""}` : ""} · v${info.version}`;
   loadHash();
   const item = state.selected;
   await loadRuns();

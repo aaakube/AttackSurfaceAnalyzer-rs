@@ -1,6 +1,7 @@
 mod collectors;
 mod diff;
 mod model;
+mod procmon;
 mod query;
 mod report;
 mod rules;
@@ -12,7 +13,6 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use collectors::{Collector, Sink};
 use model::{Kind, Severity};
 use report::ReportWriter;
-use std::collections::BTreeSet;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -44,6 +44,9 @@ enum Command {
     /// Validate and inspect rule files.
     #[command(subcommand)]
     Rules(RulesCommand),
+    /// Import Process Monitor captures to see which process made each change.
+    #[command(subcommand)]
+    Procmon(ProcmonCommand),
     /// Browse runs and comparisons in a local web UI.
     Serve {
         /// Address to listen on. Keep it on loopback: the UI has no authentication.
@@ -164,6 +167,25 @@ enum RunsCommand {
 }
 
 #[derive(Subcommand)]
+enum ProcmonCommand {
+    /// Import a capture saved from Procmon as CSV (File > Save > Comma-Separated Values).
+    /// Only events that modify files or the registry are kept.
+    Import {
+        file: PathBuf,
+        /// Name for the capture. Defaults to the file name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// List imported captures.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete an imported capture.
+    Delete { name: String },
+}
+
+#[derive(Subcommand)]
 enum RulesCommand {
     /// Parse and lint a rules file (the built-in rules if no file is given).
     Check { file: Option<PathBuf> },
@@ -209,6 +231,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Diff(args) => diff(&cli.db, args),
         Command::Runs(cmd) => runs(&cli.db, cmd),
         Command::Rules(cmd) => rules_cmd(cmd),
+        Command::Procmon(cmd) => procmon_cmd(&cli.db, cmd),
         Command::Serve {
             listen,
             rules,
@@ -347,16 +370,20 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
     let (inserted, duplicates) = ingested.context("writing objects to the database")?;
 
     let mut succeeded = Vec::new();
+    let mut failed = std::collections::BTreeMap::new();
     for (name, result, secs) in &results {
         match result {
             Ok(()) => {
                 eprintln!("  {name:<9} done in {secs:.1}s");
                 succeeded.push(name.to_string());
             }
-            Err(err) => eprintln!("  {name:<9} FAILED: {err:#}"),
+            Err(err) => {
+                eprintln!("  {name:<9} FAILED: {err:#}");
+                failed.insert(name.to_string(), format!("{err:#}"));
+            }
         }
     }
-    store.finish_run(&id, &succeeded)?;
+    store.finish_run(&id, &succeeded, &failed, warnings)?;
     eprintln!(
         "stored {inserted} objects in {:.1}s ({warnings} warnings{})",
         started.elapsed().as_secs_f64(),
@@ -380,30 +407,12 @@ fn diff(db: &Path, args: DiffArgs) -> Result<ExitCode> {
     let rules = rules::RuleSet::load(args.rules.as_deref())?;
     let store = Store::open(db)?;
     let (base, compare) = (store.run(&args.base)?, store.run(&args.compare)?);
-    for r in [&base, &compare] {
-        if !r.complete {
-            eprintln!(
-                "warning: run '{}' did not finish; results may be incomplete",
-                r.id
-            );
-        }
-    }
-
-    // Only compare kinds both runs collected; otherwise a collector that failed in
-    // one run would show every one of its objects as created or deleted.
-    let kinds = |r: &store::RunInfo| -> BTreeSet<Kind> {
-        r.collectors
-            .iter()
-            .flat_map(|c| kinds_of(c).iter().copied())
-            .collect()
-    };
-    let (bk, ck) = (kinds(&base), kinds(&compare));
-    let common: BTreeSet<Kind> = bk.intersection(&ck).copied().collect();
-    let skipped: Vec<&str> = bk.symmetric_difference(&ck).map(|k| k.as_str()).collect();
-    if !skipped.is_empty() {
+    let common = store::common_kinds(&base, &compare);
+    for n in store::coverage_notices(&base, &compare) {
         eprintln!(
-            "note: not comparing {} (collected in only one run)",
-            skipped.join(", ")
+            "{}: {}",
+            if n.level == "info" { "note" } else { "warning" },
+            n.text
         );
     }
 
@@ -503,6 +512,54 @@ fn runs(db: &Path, cmd: RunsCommand) -> Result<ExitCode> {
                 Ok(())
             })?;
             out.flush()?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn procmon_cmd(db: &Path, cmd: ProcmonCommand) -> Result<ExitCode> {
+    let store = Store::open(db)?;
+    match cmd {
+        ProcmonCommand::Import { file, name } => {
+            let name = name.unwrap_or_else(|| {
+                file.file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "capture".into())
+            });
+            let t = Instant::now();
+            let (rows, kept) = procmon::import(&store, &file, &name)?;
+            eprintln!(
+                "imported capture '{name}': {kept} distinct changes from {rows} events in {:.1}s",
+                t.elapsed().as_secs_f64()
+            );
+            eprintln!(
+                "  open a comparison in `asa serve` and filter with: modified_by = <process>"
+            );
+        }
+        ProcmonCommand::List { json } => {
+            let caps = procmon::captures(&store)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&caps)?);
+            } else if caps.is_empty() {
+                println!("no captures yet; import one with `asa procmon import capture.csv`");
+            } else {
+                println!(
+                    "{:<24} {:<21} {:>10} {:>12}  SOURCE",
+                    "NAME", "IMPORTED", "CHANGES", "EVENTS"
+                );
+                for c in caps {
+                    println!(
+                        "{:<24} {:<21} {:>10} {:>12}  {}",
+                        c.name, c.imported, c.events, c.rows, c.source
+                    );
+                }
+            }
+        }
+        ProcmonCommand::Delete { name } => {
+            if !procmon::delete(&store, &name)? {
+                bail!("no capture named '{name}'");
+            }
+            eprintln!("deleted capture '{name}'");
         }
     }
     Ok(ExitCode::SUCCESS)
