@@ -298,8 +298,7 @@ really wrote them.
 ## Roadmap
 
 WMI event subscriptions, security options (UAC, WDigest, SMBv1, NTLM levels) as one
-object, `asa record -- setup.exe` (snapshot, Procmon, install, snapshot, import in one
-command), triage (mark findings reviewed or accepted), TPM and key-storage inventory, and
+object, triage (mark findings reviewed or accepted), TPM and key-storage inventory, and
 custom registry locations from the command line.
 
 ## License
