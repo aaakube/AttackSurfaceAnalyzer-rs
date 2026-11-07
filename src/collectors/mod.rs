@@ -5,14 +5,18 @@ pub mod com;
 pub mod defender;
 pub mod files;
 pub mod firewall;
+pub mod keys;
 pub mod pe;
 pub mod ports;
 pub mod registry;
 pub mod rights;
+pub mod security;
 pub mod services;
 pub mod tasks;
+pub mod tpm;
 pub mod wifi;
 pub mod win;
+pub mod wmi;
 pub mod xml;
 
 use crate::model::Record;
@@ -77,6 +81,10 @@ pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, &'static 
         (Kind::Task, tasks::FIELDS),
         (Kind::Defender, defender::FIELDS),
         (Kind::Right, rights::FIELDS),
+        (Kind::Security, security::FIELDS),
+        (Kind::Wmi, wmi::FIELDS),
+        (Kind::Tpm, tpm::FIELDS),
+        (Kind::Key, keys::FIELDS),
     ])
 }
 

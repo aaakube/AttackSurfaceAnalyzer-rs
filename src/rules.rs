@@ -661,4 +661,88 @@ rules:
             assert!(has(&right, r), "{r}");
         }
     }
+
+    #[test]
+    fn default_rules_for_security_wmi_tpm_and_keys() {
+        let rs = RuleSet::load(None).unwrap();
+        let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
+        let modified = |kind, before: Value, after: Value| {
+            change(kind, ChangeType::Modified, Some(before), Some(after))
+        };
+
+        let sec = modified(
+            Kind::Security,
+            json!({"uac_enabled": true, "wdigest_plaintext": false, "lm_compatibility_level": 5, "smb1_server": false, "rdp_nla": true, "lsa_protection": true}),
+            json!({"uac_enabled": false, "wdigest_plaintext": true, "lm_compatibility_level": 1, "smb1_server": true, "rdp_nla": false, "lsa_protection": false}),
+        );
+        for r in [
+            "UAC disabled",
+            "WDigest stores clear-text passwords",
+            "LM or NTLMv1 authentication allowed",
+            "SMBv1 enabled",
+            "Remote Desktop without Network Level Authentication",
+            "LSA protection or Credential Guard turned off",
+        ] {
+            assert!(has(&sec, r), "{r}: {:?}", names(&rs, &sec));
+        }
+        // Hardening is not reported as weakening.
+        let better = modified(
+            Kind::Security,
+            json!({"wdigest_plaintext": true}),
+            json!({"wdigest_plaintext": false}),
+        );
+        assert!(names(&rs, &better).is_empty());
+
+        let consumer = change(
+            Kind::Wmi,
+            ChangeType::Created,
+            None,
+            Some(
+                json!({"type": "consumer", "class": "CommandLineEventConsumer", "binary_writable_by": ["Users"]}),
+            ),
+        );
+        assert!(has(&consumer, "WMI consumer runs a command or script"));
+        assert!(has(&consumer, "WMI consumer binary writable by non-admins"));
+        let log = change(
+            Kind::Wmi,
+            ChangeType::Created,
+            None,
+            Some(json!({"type": "consumer", "class": "NTEventLogEventConsumer"})),
+        );
+        assert!(!has(&log, "WMI consumer runs a command or script"));
+        let binding = change(
+            Kind::Wmi,
+            ChangeType::Created,
+            None,
+            Some(json!({"type": "binding"})),
+        );
+        assert!(has(&binding, "WMI event subscription added"));
+
+        let tpm = modified(
+            Kind::Tpm,
+            json!({"present": true, "enabled": true, "owned": true, "secure_boot": true}),
+            json!({"present": true, "enabled": false, "owned": false, "secure_boot": false}),
+        );
+        for r in [
+            "Secure Boot turned off",
+            "TPM disabled or removed",
+            "TPM ownership changed",
+        ] {
+            assert!(has(&tpm, r), "{r}");
+        }
+
+        let key = change(
+            Kind::Key,
+            ChangeType::Created,
+            None,
+            Some(json!({"name": "k", "plaintext_exportable": true, "readable_by": ["Users"]})),
+        );
+        for r in [
+            "Private key readable by non-admins",
+            "Private key exportable in plain text",
+            "Machine key added",
+        ] {
+            assert!(has(&key, r), "{r}");
+        }
+    }
 }

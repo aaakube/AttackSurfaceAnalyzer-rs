@@ -44,6 +44,9 @@ enum Command {
     /// Validate and inspect rule files.
     #[command(subcommand)]
     Rules(RulesCommand),
+    /// List or clear triage decisions (made in the web UI).
+    #[command(subcommand)]
+    Triage(TriageCommand),
     /// Import Process Monitor captures to see which process made each change.
     #[command(subcommand)]
     Procmon(ProcmonCommand),
@@ -70,7 +73,7 @@ struct CollectArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights"
+        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights,security,wmi,tpm,keys"
     )]
     collectors: Vec<CollectorName>,
     /// Directories the file collector walks (repeatable). Defaults to the system drive.
@@ -82,6 +85,14 @@ struct CollectArgs {
     /// Do not apply the default exclusions (System Volume Information, $Recycle.Bin, ...).
     #[arg(long)]
     no_default_excludes: bool,
+    /// Extra registry key for the registry collector (repeatable): `KEY` or
+    /// `KEY:DEPTH` (subkey levels), e.g. `HKLM\SOFTWARE\Vendor:2`. HKCU means every
+    /// loaded user hive.
+    #[arg(long = "registry-key", value_name = "KEY[:DEPTH]")]
+    registry_keys: Vec<String>,
+    /// Collect only the `--registry-key` locations, not the built-in ones.
+    #[arg(long, requires = "registry_keys")]
+    no_default_registry: bool,
     /// Hash file contents (BLAKE3). Slower, but catches same-size, same-mtime edits.
     #[arg(long)]
     hash: bool,
@@ -113,6 +124,10 @@ enum CollectorName {
     Tasks,
     Defender,
     Rights,
+    Security,
+    Wmi,
+    Tpm,
+    Keys,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -150,6 +165,9 @@ struct DiffArgs {
     /// Exit with status 1 if any change is at or above this severity (for CI).
     #[arg(long)]
     fail_on: Option<Severity>,
+    /// Also report changes accepted in the web UI's triage.
+    #[arg(long)]
+    include_accepted: bool,
 }
 
 #[derive(Subcommand)]
@@ -166,6 +184,23 @@ enum RunsCommand {
         id: String,
         #[arg(long)]
         kind: Option<Kind>,
+    },
+}
+
+#[derive(Subcommand)]
+enum TriageCommand {
+    /// List decisions, newest first.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove decisions: all, those of one kind, or one object's.
+    Clear {
+        #[arg(long)]
+        kind: Option<Kind>,
+        /// Object identity (path); needs --kind.
+        #[arg(long, requires = "kind")]
+        identity: Option<String>,
     },
 }
 
@@ -217,6 +252,10 @@ pub(crate) fn kinds_of(collector: &str) -> &'static [Kind] {
         "tasks" => &[Kind::Task],
         "defender" => &[Kind::Defender],
         "rights" => &[Kind::Right],
+        "security" => &[Kind::Security],
+        "wmi" => &[Kind::Wmi],
+        "tpm" => &[Kind::Tpm],
+        "keys" => &[Kind::Key],
         _ => &[],
     }
 }
@@ -238,6 +277,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Runs(cmd) => runs(&cli.db, cmd),
         Command::Rules(cmd) => rules_cmd(cmd),
         Command::Procmon(cmd) => procmon_cmd(&cli.db, cmd),
+        Command::Triage(cmd) => triage_cmd(&cli.db, cmd),
         Command::Serve {
             listen,
             rules,
@@ -300,9 +340,17 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
             })),
             #[cfg(windows)]
             CollectorName::Registry => {
+                let mut locations = Vec::new();
+                for k in &args.registry_keys {
+                    locations.extend(
+                        collectors::registry::parse_location(k, &collectors::registry::WinRegistry)
+                            .map_err(|e| anyhow::anyhow!("--registry-key {e}"))?,
+                    );
+                }
                 selected.push(Box::new(collectors::registry::RegistryCollector {
                     reg: collectors::registry::WinRegistry,
-                    locations: Vec::new(),
+                    locations,
+                    defaults: !args.no_default_registry,
                 }))
             }
             #[cfg(windows)]
@@ -332,6 +380,23 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
             }
             #[cfg(windows)]
             CollectorName::Rights => selected.push(Box::new(collectors::rights::RightsCollector)),
+            #[cfg(windows)]
+            CollectorName::Security => {
+                selected.push(Box::new(collectors::security::SecurityCollector {
+                    reg: collectors::registry::WinRegistry,
+                }))
+            }
+            #[cfg(windows)]
+            CollectorName::Wmi => selected.push(Box::new(collectors::wmi::WmiCollector {
+                threads,
+                signatures,
+            })),
+            #[cfg(windows)]
+            CollectorName::Tpm => selected.push(Box::new(collectors::tpm::TpmCollector {
+                reg: collectors::registry::WinRegistry,
+            })),
+            #[cfg(windows)]
+            CollectorName::Keys => selected.push(Box::new(collectors::keys::KeysCollector)),
             // Reads profile files, so it runs anywhere (useful against a mounted image).
             CollectorName::Wifi => selected.push(Box::new(collectors::wifi::WifiCollector {
                 root: collectors::wifi::default_root(),
@@ -457,9 +522,30 @@ fn diff(db: &Path, args: DiffArgs) -> Result<ExitCode> {
     };
 
     let mut stats = report::Stats::default();
+    let accepted = if args.include_accepted {
+        Default::default()
+    } else {
+        store.accepted()?
+    };
+    let accepted_objects: std::collections::HashSet<(&str, &str)> = accepted
+        .iter()
+        .map(|(k, i, _)| (k.as_str(), i.as_str()))
+        .collect();
+    let mut skipped_accepted = 0u64;
     store.diff_each(&base.id, &compare.id, |raw| {
         if !common.contains(&raw.kind) {
             return Ok(());
+        }
+        if accepted_objects.contains(&(raw.kind.as_str(), raw.identity.as_str())) {
+            let key = (
+                raw.kind.as_str().to_string(),
+                raw.identity.clone(),
+                store.state_of(&raw)?,
+            );
+            if accepted.contains(&key) {
+                skipped_accepted += 1;
+                return Ok(());
+            }
         }
         let change = diff::analyze(raw, &rules);
         stats.record(&change);
@@ -470,6 +556,11 @@ fn diff(db: &Path, args: DiffArgs) -> Result<ExitCode> {
         Ok(())
     })?;
     writer.finish(&stats)?;
+    if skipped_accepted > 0 {
+        eprintln!(
+            "note: {skipped_accepted} accepted change(s) left out (--include-accepted shows them)"
+        );
+    }
     if let Some(path) = &args.output {
         eprintln!(
             "wrote {} of {} changes to {}",
@@ -532,6 +623,41 @@ fn runs(db: &Path, cmd: RunsCommand) -> Result<ExitCode> {
                 Ok(())
             })?;
             out.flush()?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn triage_cmd(db: &Path, cmd: TriageCommand) -> Result<ExitCode> {
+    let store = Store::open(db)?;
+    match cmd {
+        TriageCommand::List { json } => {
+            let list = store.triage_list()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else if list.is_empty() {
+                println!("no triage decisions yet; make them in `asa serve`");
+            } else {
+                println!(
+                    "{:<9} {:<21} {:<12} IDENTITY  (NOTE)",
+                    "STATUS", "UPDATED", "KIND"
+                );
+                for t in list {
+                    let note = if t.note.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({})", t.note)
+                    };
+                    println!(
+                        "{:<9} {:<21} {:<12} {}{note}",
+                        t.status, t.updated, t.kind, t.identity
+                    );
+                }
+            }
+        }
+        TriageCommand::Clear { kind, identity } => {
+            let n = store.triage_clear(kind.map(|k| k.as_str()), identity.as_deref())?;
+            eprintln!("cleared {n} decision(s)");
         }
     }
     Ok(ExitCode::SUCCESS)

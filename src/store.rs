@@ -141,6 +141,27 @@ pub struct Progress {
     pub changes: AtomicU64,
 }
 
+/// SQL for the triage state of result row `r`: its change type and the content hash of
+/// the object (after the change, or before it for a deletion).
+pub const TRIAGE_STATE_SQL: &str = "r.change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(r.compare_blob, r.base_blob))))";
+
+/// SQL for the triage status (accepted, reviewed or NULL) of result row `r`.
+pub const TRIAGE_STATUS_SQL: &str = "(SELECT t.status FROM triage t WHERE t.kind = r.kind AND t.identity = r.identity \
+     AND t.state = r.change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(r.compare_blob, r.base_blob)))))";
+
+pub const TRIAGE_STATUSES: &[&str] = &["accepted", "reviewed"];
+
+/// One triage decision.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Triage {
+    pub kind: String,
+    pub identity: String,
+    pub state: String,
+    pub status: String,
+    pub note: String,
+    pub updated: String,
+}
+
 /// A stored comparison of two runs (see [`Store::comparison`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct ComparisonInfo {
@@ -290,7 +311,19 @@ impl Store {
              CREATE INDEX IF NOT EXISTS attribution_by_process ON attribution (comparison, process);
              CREATE TABLE IF NOT EXISTS attributed (
                  comparison INTEGER PRIMARY KEY REFERENCES comparisons(id) ON DELETE CASCADE
-             );",
+             );
+             -- Triage decisions. A decision covers one object in one state (its change
+             -- type and content hash), so it carries over to every comparison showing
+             -- that same change, and lapses when the object changes again.
+             CREATE TABLE IF NOT EXISTS triage (
+                 kind     TEXT NOT NULL,
+                 identity TEXT NOT NULL,
+                 state    TEXT NOT NULL,
+                 status   TEXT NOT NULL,
+                 note     TEXT NOT NULL DEFAULT '',
+                 updated  TEXT NOT NULL,
+                 PRIMARY KEY (kind, identity, state)
+             ) WITHOUT ROWID;",
         )?;
         crate::query::register_functions(&conn)?;
         Ok(Store { conn })
@@ -433,6 +466,129 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// Records (or with `status` None, clears) the triage decision for result `id`
+    /// of comparison `c`. Returns the decision's state key.
+    pub fn set_triage(
+        &self,
+        c: i64,
+        id: i64,
+        status: Option<&str>,
+        note: &str,
+    ) -> Result<Option<Triage>> {
+        if let Some(s) = status
+            && !TRIAGE_STATUSES.contains(&s)
+        {
+            bail!(
+                "triage status must be one of {}",
+                TRIAGE_STATUSES.join(", ")
+            );
+        }
+        let (kind, identity, state): (String, String, String) = self
+            .conn
+            .query_row(
+                &format!("SELECT r.kind, r.identity, {TRIAGE_STATE_SQL} FROM results r WHERE r.comparison = ?1 AND r.id = ?2"),
+                params![c, id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("no result {id} in comparison {c}"))?;
+        match status {
+            None => {
+                self.conn.execute(
+                    "DELETE FROM triage WHERE kind = ?1 AND identity = ?2 AND state = ?3",
+                    params![kind, identity, state],
+                )?;
+                Ok(None)
+            }
+            Some(st) => {
+                let t = Triage {
+                    kind,
+                    identity,
+                    state,
+                    status: st.to_string(),
+                    note: note.to_string(),
+                    updated: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                };
+                self.conn.execute(
+                    "INSERT INTO triage (kind, identity, state, status, note, updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT (kind, identity, state) DO UPDATE SET status = excluded.status, note = excluded.note, updated = excluded.updated",
+                    params![t.kind, t.identity, t.state, t.status, t.note, t.updated],
+                )?;
+                Ok(Some(t))
+            }
+        }
+    }
+
+    /// The decision for result `id` of comparison `c`, if any.
+    pub fn triage_of(&self, c: i64, id: i64) -> Result<Option<Triage>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT t.kind, t.identity, t.state, t.status, t.note, t.updated FROM results r JOIN triage t
+                       ON t.kind = r.kind AND t.identity = r.identity AND t.state = {TRIAGE_STATE_SQL}
+                     WHERE r.comparison = ?1 AND r.id = ?2"
+                ),
+                params![c, id],
+                |r| {
+                    Ok(Triage {
+                        kind: r.get(0)?,
+                        identity: r.get(1)?,
+                        state: r.get(2)?,
+                        status: r.get(3)?,
+                        note: r.get(4)?,
+                        updated: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn triage_list(&self) -> Result<Vec<Triage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT kind, identity, state, status, note, updated FROM triage ORDER BY updated DESC, kind, identity",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Triage {
+                kind: r.get(0)?,
+                identity: r.get(1)?,
+                state: r.get(2)?,
+                status: r.get(3)?,
+                note: r.get(4)?,
+                updated: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Removes decisions; with `identity`, only those for that object.
+    pub fn triage_clear(&self, kind: Option<&str>, identity: Option<&str>) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM triage WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR identity = ?2)",
+            params![kind, identity],
+        )?)
+    }
+
+    /// Accepted (kind, identity, state) keys, for filtering `asa diff` output.
+    pub fn accepted(&self) -> Result<std::collections::HashSet<(String, String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind, identity, state FROM triage WHERE status = 'accepted'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The triage state key of a raw change (see [`TRIAGE_STATE_SQL`]).
+    pub fn state_of(&self, change: &RawChange) -> Result<String> {
+        let blob = change.compare_blob.or(change.base_blob);
+        let hash: Vec<u8> = self
+            .conn
+            .prepare_cached("SELECT hash FROM blobs WHERE id = ?1")?
+            .query_row([blob], |r| r.get(0))?;
+        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(format!("{}:{hex}", change.change))
     }
 
     pub fn run_key(&self, id: &str) -> Result<i64> {
@@ -869,5 +1025,79 @@ mod tests {
         assert_eq!(n.len(), 1, "{n:?}");
         assert!(n[0].text.contains("'c' did not finish"));
         assert!(coverage_notices(&a, &a).is_empty());
+    }
+
+    #[test]
+    fn triage_follows_the_object_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Store::open(&dir.path().join("t.db")).unwrap();
+        snapshot(&mut s, "a", vec![rec(Kind::File, "/x", json!({"v": 1}))]);
+        snapshot(
+            &mut s,
+            "b",
+            vec![
+                rec(Kind::File, "/x", json!({"v": 2})),
+                rec(Kind::File, "/y", json!({"v": 1})),
+            ],
+        );
+        snapshot(&mut s, "c", vec![rec(Kind::File, "/x", json!({"v": 2}))]);
+        snapshot(&mut s, "d", vec![rec(Kind::File, "/x", json!({"v": 3}))]);
+        let rules = crate::rules::RuleSet::load(None).unwrap();
+        let ab = s.comparison("a", "b", &rules, "h", None).unwrap();
+        let id_of = |s: &Store, c: i64, path: &str| -> i64 {
+            s.conn
+                .query_row(
+                    "SELECT id FROM results WHERE comparison = ?1 AND identity = ?2",
+                    params![c, path],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        let x = id_of(&s, ab.id, "/x");
+        let t = s
+            .set_triage(ab.id, x, Some("accepted"), "known update")
+            .unwrap()
+            .unwrap();
+        assert!(t.state.starts_with("modified:"));
+        assert_eq!(s.triage_of(ab.id, x).unwrap().unwrap().note, "known update");
+        assert!(s.set_triage(ab.id, x, Some("bogus"), "").is_err());
+
+        // a -> c shows the same change (x: 1 -> 2): still accepted.
+        let ac = s.comparison("a", "c", &rules, "h", None).unwrap();
+        assert_eq!(
+            s.triage_of(ac.id, id_of(&s, ac.id, "/x"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "accepted"
+        );
+        // a -> d: x changed again (to 3): the decision doesn't apply.
+        let ad = s.comparison("a", "d", &rules, "h", None).unwrap();
+        assert!(
+            s.triage_of(ad.id, id_of(&s, ad.id, "/x"))
+                .unwrap()
+                .is_none()
+        );
+
+        // The CLI's state key matches the SQL one.
+        let raw = s
+            .diff("a", "b")
+            .unwrap()
+            .into_iter()
+            .find(|c| c.identity == "/x")
+            .unwrap();
+        assert_eq!(s.state_of(&raw).unwrap(), t.state);
+        assert!(
+            s.accepted()
+                .unwrap()
+                .contains(&("file".into(), "/x".into(), t.state.clone()))
+        );
+
+        assert_eq!(s.triage_list().unwrap().len(), 1);
+        s.set_triage(ab.id, x, None, "").unwrap();
+        assert!(s.triage_list().unwrap().is_empty());
+        s.set_triage(ab.id, id_of(&s, ab.id, "/y"), Some("reviewed"), "")
+            .unwrap();
+        assert_eq!(s.triage_clear(Some("file"), Some("/y")).unwrap(), 1);
     }
 }

@@ -303,6 +303,33 @@ const FLAG_FIELDS: &[&str] = &[
     "cloud_protection",
     // user rights
     "sensitive",
+    // security options
+    "uac_enabled",
+    "uac_secure_desktop",
+    "remote_uac_filtering",
+    "builtin_admin_approval",
+    "wdigest_plaintext",
+    "lsa_protection",
+    "credential_guard",
+    "lm_hash_stored",
+    "restrict_anonymous",
+    "restrict_anonymous_sam",
+    "everyone_includes_anonymous",
+    "smb1_server",
+    "smb1_client",
+    "smb_server_signing_required",
+    "smb_client_signing_required",
+    "smb_insecure_guest_logons",
+    "remote_desktop",
+    "rdp_nla",
+    // TPM, keys
+    "present",
+    "activated",
+    "owned",
+    "secure_boot",
+    "legacy",
+    "exportable",
+    "plaintext_exportable",
 ];
 
 fn field_path(field: &str) -> Result<String> {
@@ -365,6 +392,7 @@ impl Compiler {
             (Scope::Results, "path" | "identity") => Some("r.identity"),
             (Scope::Results, "kind") => Some("r.kind"),
             (Scope::Results, "change") => Some("r.change"),
+            (Scope::Results, "triage") => Some(crate::store::TRIAGE_STATUS_SQL),
             (Scope::Objects, "path" | "identity") => Some("o.identity"),
             (Scope::Objects, "kind") => Some("o.kind"),
             _ => None,
