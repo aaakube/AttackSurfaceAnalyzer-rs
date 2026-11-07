@@ -154,6 +154,23 @@ fn handle(app: &App, req: Request) {
     let (path, qs) = url.split_once('?').unwrap_or((&url, ""));
     let params = parse_query(qs);
     let method = req.method().clone();
+    if method == Method::Post {
+        let header_of = |name: &'static str| {
+            req.headers()
+                .iter()
+                .find(|h| h.field.equiv(name))
+                .map(|h| h.value.as_str().to_ascii_lowercase())
+        };
+        let origin_ok = header_of("Origin").is_none_or(|o| {
+            o.strip_prefix("http://")
+                .is_some_and(|h| app.hosts.iter().any(|a| a == h))
+        });
+        if header_of("X-Asa").is_none() || !origin_ok {
+            let _ = req
+                .respond(Response::from_string("cross-site request refused").with_status_code(403));
+            return;
+        }
+    }
 
     if path == "/export" && method == Method::Get {
         export(app, req, &params);
@@ -177,6 +194,7 @@ fn handle(app: &App, req: Request) {
         (Method::Get, "/api/results") => results(app, &params),
         (Method::Get, "/api/facets") => facets(app, &params),
         (Method::Get, "/api/tree") => tree(app, &params),
+        (Method::Post, "/api/triage") => set_triage(app, &params),
         (Method::Get, "/api/result") => result_detail(app, &params),
         (Method::Get, "/api/objects") => objects(app, &params),
         (Method::Get, "/api/object") => object_detail(app, &params),
@@ -320,6 +338,17 @@ fn result_filter(app: &App, p: &HashMap<String, String>) -> Result<ResultFilter,
     let compiled = query::compile(q, Scope::Results).map_err(bad)?;
     let mut params = compiled.params;
     params.push(Sql::Integer(c));
+    // Accepted changes are hidden unless asked for, or unless the query is about triage.
+    let hide = p.get("hide_accepted").is_some_and(|v| v == "1")
+        && !q.to_ascii_lowercase().contains("triage");
+    let hidden = if hide {
+        format!(
+            " AND COALESCE({}, '') != 'accepted'",
+            crate::store::TRIAGE_STATUS_SQL
+        )
+    } else {
+        String::new()
+    };
     let from = if compiled.needs_body {
         "results r JOIN blobs b ON b.id = COALESCE(r.compare_blob, r.base_blob)".to_string()
     } else {
@@ -327,7 +356,11 @@ fn result_filter(app: &App, p: &HashMap<String, String>) -> Result<ResultFilter,
     };
     Ok(ResultFilter {
         from,
-        filter: format!("r.comparison = ?{} AND ({})", params.len(), compiled.sql),
+        filter: format!(
+            "r.comparison = ?{} AND ({}){hidden}",
+            params.len(),
+            compiled.sql
+        ),
         params,
     })
 }
@@ -371,8 +404,10 @@ fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
                     (SELECT rule FROM findings f WHERE f.comparison = r.comparison AND f.result = r.id
                      ORDER BY severity DESC, rule) f),
                 (SELECT json_group_array(t.process) FROM attribution t
-                  WHERE t.comparison = r.comparison AND t.result = r.id)
+                  WHERE t.comparison = r.comparison AND t.result = r.id),
+                {}
          FROM {} WHERE {} ORDER BY {} LIMIT ?{} OFFSET ?{}",
+        crate::store::TRIAGE_STATUS_SQL,
         f.from,
         f.filter,
         order_by(p),
@@ -385,6 +420,7 @@ fn results(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
             let rules: String = r.get(5)?;
             let by: String = r.get(6)?;
             Ok(json!({
+                "triage": r.get::<_, Option<String>>(7)?,
                 "modified_by": serde_json::from_str::<Value>(&by).unwrap_or(json!([])),
                 "id": r.get::<_, i64>(0)?,
                 "identity": r.get::<_, String>(1)?,
@@ -417,6 +453,8 @@ fn facets(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
             let (k, n) = row?;
             let key = match k {
                 Sql::Integer(i) if col == "r.severity" => json!(severity_name(i)),
+                // Changes without a triage decision.
+                Sql::Null => json!("new"),
                 Sql::Text(s) => json!(s),
                 other => json!(format!("{other:?}")),
             };
@@ -425,6 +463,7 @@ fn facets(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
         Ok(out)
     };
     let severity = group("r.severity")?;
+    let triage = group(crate::store::TRIAGE_STATUS_SQL)?;
     let change = group("r.change")?;
     let kind = group("r.kind")?;
     let mut stmt = conn.prepare(&format!(
@@ -455,7 +494,7 @@ fn facets(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
         .collect::<rusqlite::Result<_>>()?;
     Ok(
         json!({ "severity": severity, "change": change, "kind": kind, "rules": rules,
-               "processes": processes }),
+               "processes": processes, "triage": triage }),
     )
 }
 
@@ -520,6 +559,23 @@ fn tree(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
     )
 }
 
+/// Marks result `id` of comparison `c` reviewed or accepted (with a note), or clears
+/// its decision (`status=new`).
+fn set_triage(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
+    let (c, id) = (get_i64(p, "c", -1)?, get_i64(p, "id", -1)?);
+    let status = match get(p, "status")? {
+        "new" => None,
+        s => Some(s),
+    };
+    let note = p.get("note").map(String::as_str).unwrap_or("");
+    if note.len() > 4000 {
+        return Err(bad(anyhow!("note is too long (4000 bytes at most)")));
+    }
+    let store = open(app)?;
+    let t = store.set_triage(c, id, status, note).map_err(bad)?;
+    Ok(json!({ "triage": t }))
+}
+
 fn blob(store: &Store, id: Option<i64>) -> Result<Value, ApiError> {
     let Some(id) = id else { return Ok(Value::Null) };
     let text: String =
@@ -576,6 +632,7 @@ fn result_detail(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiErr
         "change": row.2,
         "severity": severity_name(row.3),
         "findings": findings,
+        "triage": store.triage_of(c, id)?,
         "diffs": serde_json::from_str::<Value>(&row.6).unwrap_or(json!([])),
         "base": blob(&store, row.4)?,
         "compare": blob(&store, row.5)?,
@@ -782,6 +839,69 @@ fn summary(kind: &str, d: &Value) -> String {
                     .map(|m| format!("{} ASR rules", m.len())),
             ]
         }
+        "security" => {
+            let weak = |p: &str, bad: bool, label: &str| {
+                (d.get(p) == Some(&Value::Bool(bad))).then(|| label.to_string())
+            };
+            vec![
+                weak("uac_enabled", false, "UAC OFF"),
+                s("uac_admin_prompt")
+                    .filter(|p| p == "elevate_without_prompt")
+                    .map(|_| "elevates without prompt".into()),
+                weak("remote_uac_filtering", false, "remote UAC filtering off"),
+                weak("wdigest_plaintext", true, "WDIGEST PLAINTEXT"),
+                weak("lsa_protection", true, "LSA protected"),
+                weak("credential_guard", true, "Credential Guard"),
+                d.get("lm_compatibility_level")
+                    .and_then(Value::as_u64)
+                    .map(|l| format!("LM level {l}")),
+                weak("smb1_server", true, "SMBv1 server"),
+                weak("smb1_client", true, "SMBv1 client"),
+                weak("smb_insecure_guest_logons", true, "insecure SMB guest"),
+                weak("remote_desktop", true, "RDP on"),
+                weak("rdp_nla", false, "RDP without NLA"),
+            ]
+        }
+        "wmi" => vec![
+            s("type"),
+            s("class"),
+            s("query"),
+            s("command_line").or_else(|| s("executable")),
+            s("script_engine").map(|e| format!("{e} script")),
+            s("target"),
+            s("consumer").map(|c| format!("-> {c}")),
+            writable("binary_writable_by"),
+        ],
+        "tpm" => vec![
+            Some(if d.get("present") == Some(&Value::Bool(true)) {
+                format!(
+                    "TPM {} {}",
+                    s("spec_version").unwrap_or_default(),
+                    s("manufacturer").unwrap_or_default()
+                )
+            } else {
+                "NO TPM".into()
+            }),
+            (d.get("enabled") == Some(&Value::Bool(false))).then(|| "DISABLED".to_string()),
+            flag("owned", "owned"),
+            d.get("secure_boot").and_then(Value::as_bool).map(|b| {
+                if b {
+                    "Secure Boot on".into()
+                } else {
+                    "SECURE BOOT OFF".into()
+                }
+            }),
+        ],
+        "key" => vec![
+            s("provider"),
+            Some(format!(
+                "{} {}",
+                s("algorithm").unwrap_or_default(),
+                s("length").unwrap_or_default()
+            )),
+            flag("plaintext_exportable", "exportable in plain text"),
+            s("readable_by").map(|r| format!("READABLE BY {r}")),
+        ],
         "right" => vec![
             s("description"),
             flag("sensitive", "sensitive"),

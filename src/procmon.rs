@@ -257,8 +257,29 @@ pub fn sources(kind: Kind, identity: &str) -> Vec<(String, usize)> {
                 }
             }
         }
-        // User rights live in the SECURITY hive, written by lsass on everyone's behalf.
-        Kind::Right => {}
+        Kind::Security => {
+            for key in [
+                r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\Lsa",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest",
+                r"HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard",
+                r"HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters",
+                r"HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters",
+                r"HKLM\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server",
+                r"HKLM\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services",
+            ] {
+                out.push((key.to_string(), 2));
+            }
+        }
+        Kind::Key => {
+            // key\machine\software\<name>: the provider writes a file named by a hash,
+            // which only the collected object knows; nothing to match by identity.
+        }
+        // User rights live in the SECURITY hive, written by lsass on everyone's behalf;
+        // WMI subscriptions in the WMI repository (written by the WMI service); the TPM
+        // state isn't a file or registry change.
+        Kind::Right | Kind::Wmi | Kind::Tpm => {}
         // Accounts live in the SAM (written by lsass on everyone's behalf), Wi-Fi
         // profile files are named by GUID, and listening sockets are not file or
         // registry events.

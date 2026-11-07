@@ -15,6 +15,8 @@ pub struct Security {
     pub sddl: Option<String>,
     /// Low-privileged principals granted write access (see [`LOW_PRIV_SIDS`]).
     pub writable_by: Vec<String>,
+    /// Low-privileged principals granted read access (for secrets such as private keys).
+    pub readable_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -66,9 +68,24 @@ pub enum Ace<'a> {
     Deny { sid: &'a str, mask: u32 },
 }
 
-/// Evaluates a canonical DACL (deny ACEs first) per low-privileged SID.
-/// Only exact SID matches are considered; group nesting is not expanded.
+/// Access bits that let a principal read an object's contents (FILE_READ_DATA,
+/// GENERIC_READ, GENERIC_ALL).
+pub const READ_MASK: u32 = 0x1 | 0x8000_0000 | 0x1000_0000;
+
+/// Low-privileged principals that can modify or replace the object.
 pub fn writable_by(aces: &[Ace]) -> Vec<String> {
+    granted_to(aces, WRITE_MASK)
+}
+
+/// Low-privileged principals that can read the object.
+pub fn readable_by(aces: &[Ace]) -> Vec<String> {
+    granted_to(aces, READ_MASK)
+}
+
+/// Evaluates a canonical DACL (deny ACEs first) per low-privileged SID: who is
+/// granted any of `mask`. Only exact SID matches are considered; group nesting is
+/// not expanded.
+pub fn granted_to(aces: &[Ace], mask_of_interest: u32) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut state: Vec<(&str, u32, u32)> = Vec::new(); // (sid, denied, granted)
     for ace in aces {
@@ -94,7 +111,7 @@ pub fn writable_by(aces: &[Ace]) -> Vec<String> {
         }
     }
     for (sid, _, granted) in state {
-        if granted & WRITE_MASK != 0 {
+        if granted & mask_of_interest != 0 {
             out.push(low_priv_label(sid).unwrap().to_string());
         }
     }
@@ -136,7 +153,7 @@ pub use ffi::{key_writable_by, read_with_backup, security, sid_and_name, signatu
 
 #[cfg(windows)]
 mod ffi {
-    use super::{Ace, Security, Signature, trust_status, writable_by};
+    use super::{Ace, Security, Signature, readable_by, trust_status, writable_by};
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::ffi::c_void;
@@ -324,7 +341,7 @@ mod ffi {
         let out = if dacl.is_null() {
             vec!["Everyone".into()]
         } else {
-            unsafe { dacl_writers(dacl) }
+            unsafe { dacl_access(dacl).0 }
         };
         unsafe { LocalFree(sd) };
         out
@@ -369,18 +386,19 @@ mod ffi {
             {
                 out.sddl = Some(take_local_wstr(sddl));
             }
-            out.writable_by = if dacl.is_null() {
+            (out.writable_by, out.readable_by) = if dacl.is_null() {
                 // A NULL DACL grants everyone full control.
-                vec!["Everyone".into()]
+                (vec!["Everyone".into()], vec!["Everyone".into()])
             } else {
-                dacl_writers(dacl)
+                dacl_access(dacl)
             };
             LocalFree(sd);
         }
         Ok(out)
     }
 
-    unsafe fn dacl_writers(dacl: *mut ACL) -> Vec<String> {
+    /// (writable_by, readable_by) of a DACL.
+    unsafe fn dacl_access(dacl: *mut ACL) -> (Vec<String>, Vec<String>) {
         let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
         let ok = unsafe {
             GetAclInformation(
@@ -391,7 +409,7 @@ mod ffi {
             )
         };
         if ok == 0 {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let mut sids: Vec<(String, u32, bool)> = Vec::new();
         for i in 0..info.AceCount {
@@ -425,7 +443,7 @@ mod ffi {
                 }
             })
             .collect();
-        writable_by(&aces)
+        (writable_by(&aces), readable_by(&aces))
     }
 
     /// Runs WinVerifyTrust, returning the HRESULT and the leaf signer's name.

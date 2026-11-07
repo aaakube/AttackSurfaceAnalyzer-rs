@@ -505,8 +505,52 @@ struct KeyObject {
 
 pub struct RegistryCollector<R: Registry> {
     pub reg: R,
-    /// Replaces the default locations when non-empty.
+    /// Extra locations (`--registry-key`), walked after the defaults.
     pub locations: Vec<Location>,
+    /// Walk the built-in persistence and policy locations too.
+    pub defaults: bool,
+}
+
+/// Parses a `--registry-key` argument: `KEY` or `KEY:DEPTH` (subkey levels, default
+/// 0), with `HKEY_LOCAL_MACHINE`/`HKEY_USERS` spelled out or abbreviated. `HKCU\X`
+/// means `X` in every loaded user hive, like the built-in per-user locations.
+pub fn parse_location(arg: &str, reg: &dyn Registry) -> Result<Vec<Location>, String> {
+    let (path, depth) = match arg.rsplit_once(':') {
+        Some((p, d)) if !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()) => (
+            p,
+            d.parse::<u32>()
+                .map_err(|_| format!("bad depth in '{arg}'"))?,
+        ),
+        _ => (arg, 0),
+    };
+    if depth > 16 {
+        return Err(format!("depth {depth} in '{arg}' is too deep (at most 16)"));
+    }
+    let path = path.trim().trim_end_matches('\\');
+    let (root, rest) = path.split_once('\\').unwrap_or((path, ""));
+    let join_rest = |base: &str| {
+        if rest.is_empty() {
+            base.to_string()
+        } else {
+            format!(r"{base}\{rest}")
+        }
+    };
+    Ok(match root.to_ascii_uppercase().as_str() {
+        "HKLM" | "HKEY_LOCAL_MACHINE" => vec![loc(&join_rest("HKLM"), depth)],
+        "HKU" | "HKEY_USERS" => vec![loc(&join_rest("HKU"), depth)],
+        "HKCU" | "HKEY_CURRENT_USER" => user_sids(reg)
+            .into_iter()
+            .map(|sid| loc(&join_rest(&format!(r"HKU\{sid}")), depth))
+            .collect(),
+        "HKCR" | "HKEY_CLASSES_ROOT" => {
+            vec![loc(&join_rest(r"HKLM\SOFTWARE\Classes"), depth)]
+        }
+        _ => {
+            return Err(format!(
+                "'{arg}': registry keys start with HKLM, HKU, HKCU or HKCR"
+            ));
+        }
+    })
 }
 
 impl<R: Registry> Collector for RegistryCollector<R> {
@@ -515,15 +559,17 @@ impl<R: Registry> Collector for RegistryCollector<R> {
     }
 
     fn collect(&self, sink: &Sink) -> Result<()> {
-        let defaults;
-        let locations = if self.locations.is_empty() {
-            defaults = default_locations(&self.reg);
-            &defaults
-        } else {
-            &self.locations
-        };
         let mut seen = std::collections::HashSet::new();
-        for l in locations {
+        if self.defaults {
+            for l in default_locations(&self.reg) {
+                self.walk(&l.path, l.depth, sink, &mut seen);
+            }
+        }
+        for l in &self.locations {
+            if self.reg.values(&l.path).is_none() {
+                sink.warn(|| format!("registry key {} not found", l.path));
+                continue;
+            }
             self.walk(&l.path, l.depth, sink, &mut seen);
         }
         Ok(())
@@ -622,6 +668,7 @@ mod tests {
                 loc(r"HKLM\SOFTWARE", 0),
                 loc(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run", 1),
             ],
+            defaults: false,
         };
         let (tx, rx) = crossbeam_channel::unbounded();
         let sink = Sink::new(tx, false);
@@ -649,5 +696,62 @@ mod tests {
             writable_by: vec!["Users".into()],
         };
         crate::collectors::assert_fields(&obj, FIELDS);
+    }
+
+    #[test]
+    fn parses_custom_locations() {
+        let mut reg = MemRegistry::default();
+        reg.key(r"HKU\S-1-5-21-1-1001\Software", &[]);
+        reg.key(r"HKU\.DEFAULT\Software", &[]);
+        let p = |a: &str| {
+            parse_location(a, &reg)
+                .map(|v| v.into_iter().map(|l| (l.path, l.depth)).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            p(r"HKLM\SOFTWARE\Vendor:2"),
+            Ok(vec![(r"HKLM\SOFTWARE\Vendor".into(), 2)])
+        );
+        assert_eq!(
+            p(r"HKEY_LOCAL_MACHINE\SOFTWARE\Vendor\"),
+            Ok(vec![(r"HKLM\SOFTWARE\Vendor".into(), 0)])
+        );
+        assert_eq!(
+            p(r"HKCR\CLSID\{X}:1"),
+            Ok(vec![(r"HKLM\SOFTWARE\Classes\CLSID\{X}".into(), 1)])
+        );
+        assert_eq!(
+            p(r"HKCU\Software\Vendor"),
+            Ok(vec![(r"HKU\S-1-5-21-1-1001\Software\Vendor".into(), 0)])
+        );
+        assert!(p(r"HKLM\X:99").is_err());
+        assert!(p(r"C:\Windows").is_err());
+    }
+
+    #[test]
+    fn custom_locations_add_to_defaults_and_warn_when_missing() {
+        let mut reg = MemRegistry::default();
+        reg.key(r"HKLM\SOFTWARE\Vendor\App", &[("Mode", RegValue::Num(1))]);
+        let c = RegistryCollector {
+            reg,
+            locations: vec![
+                loc(r"HKLM\SOFTWARE\Vendor", 1),
+                loc(r"HKLM\SOFTWARE\Nope", 0),
+            ],
+            defaults: true,
+        };
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let sink = Sink::new(tx, false);
+        c.collect(&sink).unwrap();
+        assert_eq!(sink.warnings(), 1);
+        drop(sink);
+        let ids: Vec<String> = rx.iter().map(|r| r.identity).collect();
+        assert!(
+            ids.contains(&r"HKLM\SOFTWARE\Vendor\App".to_string()),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&r"HKLM\SOFTWARE".to_string()),
+            "defaults walked too"
+        );
     }
 }

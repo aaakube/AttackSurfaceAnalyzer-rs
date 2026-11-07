@@ -23,6 +23,10 @@ defaults:
   task: info
   defender: warning
   right: info
+  security: warning
+  wmi: warning
+  tpm: warning
+  key: info
 
 rules:
   # ---------------------------------------------------------------- signatures
@@ -1067,3 +1071,164 @@ rules:
     kinds: [right]
     changes: [modified]
     when: { field: members, changed: true }
+
+  # ---------------------------------------------------------------- security options
+  - name: UAC disabled
+    description: With EnableLUA off, every program an administrator starts runs fully elevated.
+    severity: critical
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: uac_enabled, eq: false }, { field: uac_enabled, changed: true }]
+
+  - name: UAC elevates administrators without prompting
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: uac_admin_prompt, eq: elevate_without_prompt }, { field: uac_admin_prompt, changed: true }]
+
+  - name: Remote UAC filtering disabled
+    description: LocalAccountTokenFilterPolicy = 1 gives any local administrator full rights over the network (pass-the-hash).
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: remote_uac_filtering, eq: false }, { field: remote_uac_filtering, changed: true }]
+
+  - name: WDigest stores clear-text passwords
+    description: UseLogonCredential = 1 keeps logon passwords in clear text in LSASS memory.
+    severity: critical
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: wdigest_plaintext, eq: true }, { field: wdigest_plaintext, changed: true }]
+
+  - name: LSA protection or Credential Guard turned off
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: lsa_protection, eq: false }, { field: lsa_protection, changed: true }]
+        - all: [{ field: credential_guard, eq: false }, { field: credential_guard, changed: true }]
+
+  - name: LM or NTLMv1 authentication allowed
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: lm_compatibility_level, lt: 3 }, { field: lm_compatibility_level, changed: true }]
+        - all: [{ field: lm_hash_stored, eq: true }, { field: lm_hash_stored, changed: true }]
+
+  - name: Anonymous access loosened
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: restrict_anonymous_sam, eq: false }, { field: restrict_anonymous_sam, changed: true }]
+        - all: [{ field: everyone_includes_anonymous, eq: true }, { field: everyone_includes_anonymous, changed: true }]
+
+  - name: SMBv1 enabled
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: smb1_server, eq: true }, { field: smb1_server, changed: true }]
+        - all: [{ field: smb1_client, eq: true }, { field: smb1_client, changed: true }]
+
+  - name: Insecure SMB guest logons allowed
+    severity: error
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: smb_insecure_guest_logons, eq: true }, { field: smb_insecure_guest_logons, changed: true }]
+
+  - name: SMB signing no longer required
+    severity: warning
+    kinds: [security]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: smb_server_signing_required, eq: false }, { field: smb_server_signing_required, changed: true }]
+        - all: [{ field: smb_client_signing_required, eq: false }, { field: smb_client_signing_required, changed: true }]
+
+  - name: Remote Desktop without Network Level Authentication
+    severity: warning
+    kinds: [security]
+    changes: [modified]
+    when:
+      all: [{ field: rdp_nla, eq: false }, { field: rdp_nla, changed: true }]
+
+  # ---------------------------------------------------------------- WMI event subscriptions
+  - name: WMI consumer runs a command or script
+    description: Permanent WMI subscriptions run their consumer as SYSTEM whenever the filter's event happens; a fileless persistence technique.
+    severity: critical
+    kinds: [wmi]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: type, eq: consumer }
+        - { field: class, in: [CommandLineEventConsumer, ActiveScriptEventConsumer] }
+
+  - name: WMI consumer binary writable by non-admins
+    severity: critical
+    kinds: [wmi]
+    changes: [created, modified]
+    when: { field: binary_writable_by, exists: true }
+
+  - name: WMI event subscription added
+    severity: error
+    kinds: [wmi]
+    changes: [created]
+    when: { field: type, in: [filter, binding] }
+
+  # ---------------------------------------------------------------- TPM and Secure Boot
+  - name: Secure Boot turned off
+    severity: critical
+    kinds: [tpm]
+    changes: [modified]
+    when:
+      all: [{ field: secure_boot, eq: false }, { field: secure_boot, changed: true }]
+
+  - name: TPM disabled or removed
+    severity: error
+    kinds: [tpm]
+    changes: [modified]
+    when:
+      any:
+        - all: [{ field: present, eq: false }, { field: present, changed: true }]
+        - all: [{ field: enabled, eq: false }, { field: enabled, changed: true }]
+        - all: [{ field: activated, eq: false }, { field: activated, changed: true }]
+
+  - name: TPM ownership changed
+    description: The TPM was cleared or taken over; keys sealed to it (BitLocker, Windows Hello) were lost or reset.
+    severity: warning
+    kinds: [tpm]
+    changes: [modified]
+    when: { field: owned, changed: true }
+
+  # ---------------------------------------------------------------- machine keys
+  - name: Private key readable by non-admins
+    description: Any user can copy the key file and use or crack the private key.
+    severity: critical
+    kinds: [key]
+    changes: [created, modified]
+    when: { field: readable_by, exists: true }
+
+  - name: Private key exportable in plain text
+    severity: warning
+    kinds: [key]
+    changes: [created, modified]
+    when:
+      all: [{ field: plaintext_exportable, eq: true }]
+
+  - name: Machine key added
+    severity: info
+    kinds: [key]
+    changes: [created]
+    when: { field: name, exists: true }
+

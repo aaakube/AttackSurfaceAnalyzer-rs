@@ -53,6 +53,13 @@ and loads nothing from the internet.
   only one of the two runs, or collection hit access-denied warnings, the comparison says so
   above the results (and `asa diff` prints the same notes). That way a missing change is never
   taken for "nothing changed".
+- **Triage:** in a change's detail, *Mark reviewed* or *Accept* it, with a note. A decision
+  covers that object in that exact state (its content hash), so it carries over to every
+  comparison showing the same change and lapses as soon as the object changes again.
+  Accepted changes are hidden unless you untick *Hide accepted*. The *Triage* facet and the
+  `triage` query field (`triage = accepted`, `triage missing`) filter on it. `asa diff`
+  leaves accepted changes out too (`--include-accepted` shows them), and `asa triage list` /
+  `asa triage clear` manage decisions from the command line.
 - **Browse run:** query the objects of a single snapshot, for example every unsigned PE on
   the machine.
 - **Detail panel:** findings with explanations, a before/after table of changed fields,
@@ -89,7 +96,7 @@ snapshots). Combine with `and`, `or`, `not` and parentheses. Adjacent terms are 
 String comparisons ignore case. Strings take no escapes, so write Windows paths as-is; to
 include a quote character, delimit the string with the other kind of quote.
 
-Fields: `path`, `kind`, `change`, `severity`, `rule`, `modified_by`, plus any object field (see below), with
+Fields: `path`, `kind`, `change`, `severity`, `rule`, `modified_by`, `triage`, plus any object field (see below), with
 dots for nested ones (`signature.status`, `pe.cfg`).
 
 ## Air-gapped deployment
@@ -134,14 +141,16 @@ Offline behaviour:
 | `asa diff BASE COMPARE` | Compare two runs in the terminal or to a file. `--format table\|json\|jsonl\|sarif`, `-o FILE`, `--min-severity LEVEL`, `--rules FILE`. `--fail-on LEVEL` exits with status 1 if a change reaches that level. |
 | `asa runs list\|delete ID\|export ID` | Manage runs. `export` dumps a snapshot as JSON lines. |
 | `asa procmon import FILE.csv\|list\|delete NAME` | Import a Process Monitor capture so each change shows which process made it. `--name` names the capture. |
+| `asa triage list\|clear` | List triage decisions, or clear them (`--kind`, `--identity`). |
 | `asa rules check [FILE]` | Validate a rules file and lint it for unknown fields and regexes that can never match. |
 | `asa rules default` | Print the built-in rules, as a starting point for your own. |
 
 ## What is collected
 
 `asa collect` runs every collector by default (`files, services, firewall, com, registry, users,
-certificates, ports, wifi, tasks, defender, rights`); `--collectors files,services,...` picks some.
-All collectors read files, the registry and Win32 APIs directly (no PowerShell or WMI), so they are
+certificates, ports, wifi, tasks, defender, rights, security, wmi, tpm, keys`); `--collectors
+files,services,...` picks some. Collectors read files, the registry and Win32 APIs directly (no
+PowerShell; WMI only where the data lives nowhere else: WMI subscriptions and the TPM), so they are
 fast and work offline. Runtime state (running/stopped) is deliberately not collected: it
 changes constantly and is not attack surface.
 
@@ -159,7 +168,15 @@ changes constantly and is not attack surface.
 | `task` | `task\<task path>` | `path`, `author`, `description`, `enabled`, `hidden`, `run_as` (well-known SIDs as names; absent when it runs as whoever registered it), `run_level` (highest / limited), `logon_type`, `privileged` (SYSTEM, a service account, administrators, or elevated), `triggers` (boot, logon, time, calendar, event, idle, registration, session, ...), `actions`, `binary`, `arguments`, `working_directory`, `com_handler`, `script_host` (cmd, PowerShell, mshta, rundll32, ... where the arguments are what runs), `binary_missing`, `binary_signature.*`, `binary_writable_by`. Parsed from the definitions in `System32\Tasks`; the few that deny administrators are read with backup rights. Run history is left out. |
 | `defender` | `defender\exclusion\<source>\<category>\<value>`, `defender\settings` | exclusions: `source` (local / policy), `category` (path, extension, process, ip, asr, cfa_app), `value`, `writable_by` (for an existing path: who can drop unscanned files there); settings: `realtime_protection`, `behavior_monitoring`, `scan_downloads`, `script_scanning`, `disabled_by_policy`, `tamper_protection`, `cloud_protection`, `sample_submission`, `pua_protection`, `controlled_folder_access`, `asr_rules` (rule GUID → off / block / audit / warn). Policy overrides local, as in Defender. |
 | `right` | `right\<SeXxx>` | `name`, `description`, `sensitive` (amounts to full control: debug, impersonate, backup/restore, load driver, take ownership, act as OS, ...), `members`, `sids`, `unexpected_members` (holders of a sensitive right other than the built-in ones that normally have it). Every right is listed, held or not, so a first grant is a modification. |
+| `security` | `security\options` | One object with the effective machine-wide settings: `uac_enabled`, `uac_admin_prompt`, `uac_secure_desktop`, `remote_uac_filtering` (LocalAccountTokenFilterPolicy), `builtin_admin_approval`, `wdigest_plaintext`, `lsa_protection` (RunAsPPL), `credential_guard`, `lm_compatibility_level`, `lm_hash_stored`, `ntlm_outgoing`, `restrict_anonymous`, `restrict_anonymous_sam`, `everyone_includes_anonymous`, `smb1_server`, `smb1_client`, `smb_server_signing_required`, `smb_client_signing_required`, `smb_insecure_guest_logons`, `remote_desktop`, `rdp_nla`. Policy wins, and unset values take Windows' defaults. |
+| `wmi` | `wmi\<namespace>\filter\<name>`, `...\consumer\<class>\<name>`, `...\binding\<filter> -> <consumer>` | Permanent event subscriptions in `root\subscription` and `root\default`: filters (`query`, `query_language`, `event_namespace`), consumers (`class`, `command_line`, `executable`, `script_engine`, `script_text`, `script_file`, `target`, and for command lines `binary`, `binary_signature.*`, `binary_writable_by`), and the bindings between them. |
+| `tpm` | `tpm` | `present`, `enabled`, `activated`, `owned`, `manufacturer`, `manufacturer_version`, `spec_version`, `secure_boot` |
+| `key` | `key\machine\<provider>\<container>` | Machine keys of the software and TPM key storage providers: `provider`, `name`, `algorithm`, `length`, `legacy` (CryptoAPI container), `exportable`, `plaintext_exportable`, `file`, `readable_by` (who besides administrators can read the key file, i.e. copy the private key). Key material is never read; per-user keys are left out. |
 | `wifi` | `wifi\<adapter>\<profile>` | `ssid`, `connection_mode`, `hidden_network`, `authentication`, `encryption`, `uses_802_1x`, `key_type`, `key_protected` (keys are never collected) |
+
+Add your own registry locations with `--registry-key KEY[:DEPTH]` (repeatable): for example
+`--registry-key HKLM\SOFTWARE\Vendor:2` walks that key and two levels of subkeys, and
+`HKCU\...` means every loaded user hive. `--no-default-registry` collects only those.
 
 The registry collector covers persistence and policy locations: Run/RunOnce (machine, 32-bit
 and every loaded user), Winlogon, Windows (AppInit_DLLs), Image File Execution Options,
@@ -297,9 +314,10 @@ really wrote them.
 
 ## Roadmap
 
-WMI event subscriptions, security options (UAC, WDigest, SMBv1, NTLM levels) as one
-object, triage (mark findings reviewed or accepted), TPM and key-storage inventory, and
-custom registry locations from the command line.
+See [docs/roadmap.md](docs/roadmap.md): improvements to what exists (performance at
+100k+ changes, robustness, tests, accessibility, releases) and ideas for assessors
+(privilege-escalation paths, phantom DLL hijacks from Procmon, secrets on disk, ATT&CK
+mapping, hardening scorecards, ...).
 
 ## License
 

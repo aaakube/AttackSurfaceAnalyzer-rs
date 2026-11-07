@@ -102,6 +102,14 @@ td.summary { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .tmore { padding: 3px 0; color: var(--muted); font-size: 12px; }
 /* Scroll sideways rather than squeeze paths to a letter wide when the detail panel is open. */
 #table { min-width: 720px; }
+.hidebox { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.tri { display: inline-block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+.tri.accepted { background: var(--accent-soft); color: var(--accent); } .tri.reviewed { background: var(--code); color: var(--muted); }
+tr.row.accepted td { opacity: .55; }
+.triage-box { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+.triage-box textarea { width: 100%; box-sizing: border-box; min-height: 48px; font: inherit; font-size: 13px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.triage-box .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.triage-box .btns button.on { border-color: var(--accent); color: var(--accent); }
 .by { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
 table.events td { font-size: 12px; }
 .rule { display: inline-block; font-size: 11.5px; background: var(--code); border-radius: 4px; padding: 1px 6px; margin: 1px 4px 1px 0; }
@@ -165,6 +173,7 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
     <div class="querybar">
       <input type="text" id="q" spellcheck="false" autocomplete="off"
              placeholder='Filter, e.g.  severity >= warning and kind = service   (press Enter; "/" to focus)'>
+      <label class="hidebox" id="hidebox" title="Changes marked accepted in triage"><input type="checkbox" id="hide-accepted" checked> Hide accepted</label>
       <select id="view" title="View">
         <option value="list">List</option>
         <option value="tree">Tree</option>
@@ -181,7 +190,7 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
     <div id="help">
       <p><b>Query syntax.</b> Conditions are <code>field op value</code>, combined with <code>and</code>, <code>or</code>, <code>not</code> and parentheses. A bare word searches paths.</p>
       <p>Operators: <code>=</code> <code>!=</code> <code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code> <code>~</code> (regex) <code>has</code> (substring or list item) <code>exists</code> <code>missing</code> <code>changed</code>.
-         Fields: <code>path</code> <code>kind</code> (file, service, driver, firewall, com, registry, user, group, certificate, port, wifi, task, defender, right) <code>severity</code> <code>change</code> <code>rule</code> and any object field such as <code>signature.status</code>, <code>pe.aslr</code>, <code>start</code>, <code>account</code>, <code>local_ports</code>, <code>server</code>, <code>values.Debugger</code>.
+         Fields: <code>path</code> <code>kind</code> (file, service, driver, firewall, com, registry, user, group, certificate, port, wifi, task, defender, right, security, wmi, tpm, key) <code>severity</code> <code>change</code> <code>rule</code> and any object field such as <code>signature.status</code>, <code>pe.aslr</code>, <code>start</code>, <code>account</code>, <code>local_ports</code>, <code>server</code>, <code>values.Debugger</code>.
          Strings take no escapes, so write Windows paths as-is. Click a facet, card or object field to add it.</p>
       <p class="hint">Examples (click one):</p>
       <span class="ex">severity >= warning</span>
@@ -202,6 +211,9 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
       <span class="ex">kind = task and privileged and (binary_writable_by exists or script_host)</span>
       <span class="ex">kind = defender and type = exclusion</span>
       <span class="ex">kind = right and unexpected_members exists</span>
+      <span class="ex">kind = security and (wdigest_plaintext or not uac_enabled or smb1_server)</span>
+      <span class="ex">kind = wmi and type = consumer</span>
+      <span class="ex">triage missing and severity >= warning</span>
       <span class="ex">modified_by ~ "^msiexec" and severity >= warning</span>
       <p class="hint"><code>modified_by</code> needs a Procmon capture: <code>asa procmon import capture.csv</code>.</p>
     </div>
@@ -244,13 +256,15 @@ function h(tag, attrs, ...kids) {
 
 async function api(path, params, method = "GET") {
   const qs = new URLSearchParams(params || {}).toString();
-  const res = await fetch(path + (qs ? "?" + qs : ""), { method });
+  // Writes carry a header a cross-site page can't send without a CORS preflight,
+  // which the server never grants.
+  const res = await fetch(path + (qs ? "?" + qs : ""), { method, headers: method === "POST" ? { "X-Asa": "1" } : {} });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
 }
 
-const state = { mode: "compare", view: "list", c: null, run: null, q: "", sort: "severity", offset: 0, total: 0, loading: 0, selected: null };
+const state = { mode: "compare", view: "list", showAccepted: false, c: null, run: null, q: "", sort: "severity", offset: 0, total: 0, loading: 0, selected: null };
 
 // ---------------------------------------------------------------- URL state
 function saveHash() {
@@ -261,6 +275,7 @@ function saveHash() {
   if (state.q) p.set("q", state.q);
   if (state.sort !== "severity") p.set("sort", state.sort);
   if (state.view !== "list") p.set("view", state.view);
+  if (state.showAccepted) p.set("accepted", "1");
   if (state.selected !== null) p.set("item", state.selected);
   history.replaceState(null, "", "#" + p.toString());
 }
@@ -272,7 +287,14 @@ function loadHash() {
   state.q = p.get("q") || "";
   state.sort = p.get("sort") || "severity";
   state.view = p.get("view") === "tree" ? "tree" : "list";
+  state.showAccepted = p.get("accepted") === "1";
   state.selected = p.get("item");
+}
+
+// Parameters every comparison request shares: the comparison, the query and
+// whether accepted changes are hidden.
+function cmp(extra) {
+  return { c: state.c, q: state.q, hide_accepted: state.showAccepted ? "0" : "1", ...(extra || {}) };
 }
 
 // ---------------------------------------------------------------- sidebar
@@ -371,7 +393,7 @@ function setMode(mode) {
   $("tab-browse").classList.toggle("on", mode === "browse");
   $("side-compare").style.display = mode === "compare" ? "" : "none";
   $("side-browse").style.display = mode === "browse" ? "" : "none";
-  for (const id of ["view", "export-jsonl", "export-csv"]) $(id).style.display = mode === "compare" ? "" : "none";
+  for (const id of ["view", "export-jsonl", "export-csv", "hidebox"]) $(id).style.display = mode === "compare" ? "" : "none";
   $("sort").style.display = mode === "compare" && state.view === "list" ? "" : "none";
 }
 $("tab-compare").addEventListener("click", () => { closeDetail(); setMode("compare"); state.q = ""; $("q").value = ""; if (state.c) openComparison(state.c); else reset(); });
@@ -450,6 +472,7 @@ const quote = (s) => /^[A-Za-z0-9_.\-]+$/.test(s) ? s : (s.includes('"') ? `'${s
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { state.q = $("q").value.trim(); refresh(); } });
 $("sort").addEventListener("change", () => { state.sort = $("sort").value; refresh(); });
 $("view").addEventListener("change", () => { state.view = $("view").value; refresh(); });
+$("hide-accepted").addEventListener("change", () => { state.showAccepted = !$("hide-accepted").checked; refresh(); });
 $("helpbtn").addEventListener("click", () => $("help").classList.toggle("open"));
 for (const ex of document.querySelectorAll("#help .ex")) {
   ex.addEventListener("click", () => { $("q").value = ex.textContent; state.q = ex.textContent; $("help").classList.remove("open"); refresh(); });
@@ -457,7 +480,7 @@ for (const ex of document.querySelectorAll("#help .ex")) {
 for (const fmt of ["jsonl", "csv"]) {
   $("export-" + fmt).addEventListener("click", () => {
     if (!state.c) return;
-    location.href = "/export?" + new URLSearchParams({ c: state.c, q: state.q, sort: state.sort, format: fmt });
+    location.href = "/export?" + new URLSearchParams(cmp({ sort: state.sort, format: fmt }));
   });
 }
 
@@ -467,6 +490,7 @@ async function refresh() {
   setMode(state.mode);
   closeDetail();
   $("q").value = state.q; $("sort").value = state.sort; $("view").value = state.view;
+  $("hide-accepted").checked = !state.showAccepted;
   if ((state.mode === "compare" && !state.c) || (state.mode === "browse" && !state.run)) return reset();
   state.offset = 0; state.total = 0;
   $("tbody").replaceChildren(); $("err").textContent = ""; $("q").classList.remove("err");
@@ -492,7 +516,7 @@ async function loadMore(mySeq) {
   state.loading = mySeq;
   try {
     const params = state.mode === "compare"
-      ? { c: state.c, q: state.q, sort: state.sort, offset: state.offset, limit: PAGE }
+      ? cmp({ sort: state.sort, offset: state.offset, limit: PAGE })
       : { run: state.run, q: state.q, offset: state.offset, limit: PAGE };
     const r = await api(state.mode === "compare" ? "/api/results" : "/api/objects", params);
     if (mySeq !== seq) return;
@@ -514,7 +538,7 @@ new IntersectionObserver((entries) => {
 // collapsed into one row (C:\Program Files\Vendor\App).
 async function loadTree(mySeq) {
   let f;
-  try { f = await api("/api/facets", { c: state.c, q: state.q }); }
+  try { f = await api("/api/facets", cmp()); }
   catch (e) { if (mySeq === seq) { $("err").textContent = e.message; $("q").classList.add("err"); } return; }
   if (mySeq !== seq) return;
   const total = (f.kind || []).reduce((a, [, n]) => a + n, 0);
@@ -551,7 +575,7 @@ function treeRow(n) {
     const mySeq = seq;
     let r;
     for (;;) {
-      try { r = await api("/api/tree", { c: state.c, q: state.q, kind: n.kind, prefix }); }
+      try { r = await api("/api/tree", cmp({ kind: n.kind, prefix })); }
       catch (e) { $("err").textContent = e.message; return; }
       if (mySeq !== seq) return;
       // Collapse a folder whose only content is one subfolder.
@@ -579,8 +603,9 @@ function treeRow(n) {
 }
 
 function resultRow(it) {
-  const tr = h("tr", { class: "row", onclick: () => { select(tr); showResult(it.id); } },
-    h("td", {}, h("span", { class: "sev " + it.severity }, it.severity)),
+  const tr = h("tr", { class: "row" + (it.triage === "accepted" ? " accepted" : ""), onclick: () => { select(tr); showResult(it.id); } },
+    h("td", {}, h("span", { class: "sev " + it.severity }, it.severity),
+      it.triage ? h("span", { class: "tri " + it.triage, title: `Triage: ${it.triage}` }, it.triage) : null),
     h("td", {}, h("span", { class: "chg " + it.change }, it.change)),
     h("td", {}, h("span", { class: "kind" }, it.kind)),
     h("td", { class: "path" }, pathNode(it.identity),
@@ -623,8 +648,8 @@ async function loadFacets(mySeq) {
       return rest.length === terms.length ? null : rest.join(" and ");
     });
     const [main, ...others] = await Promise.all([
-      api("/api/facets", { c: state.c, q: state.q }),
-      ...without.map((q) => q === null ? null : api("/api/facets", { c: state.c, q }))]);
+      api("/api/facets", cmp()),
+      ...without.map((q) => q === null ? null : api("/api/facets", cmp({ q })))]);
     f = main;
     fields.forEach((fld, i) => { if (others[i]) f[fld] = others[i][fld]; });
   } catch { return; }
@@ -641,6 +666,8 @@ async function loadFacets(mySeq) {
       h("span", { class: "name chg " + k }, k), h("span", { class: "n" }, n.toLocaleString())))),
     ...block("Modified by (Procmon)", (f.processes || []).map(([p, n]) => toggler("div", { class: "facet", title: p }, `modified_by = ${quote(p)}`,
       h("span", { class: "name" }, p), h("span", { class: "n" }, n.toLocaleString())))),
+    ...block("Triage", (f.triage || []).map(([t, n]) => toggler("div", { class: "facet" }, t === "new" ? "triage missing" : `triage = ${t}`,
+      h("span", { class: "name" }, t), h("span", { class: "n" }, n.toLocaleString())))),
     ...block("Rules", f.rules.map(([rule, sev, n]) => toggler("div", { class: "facet", title: rule }, `rule = ${quote(rule)}`,
       h("span", { class: "name" }, h("span", { class: "sev " + sev }, "● "), rule), h("span", { class: "n" }, n.toLocaleString())))));
 }
@@ -684,6 +711,29 @@ function detailShell(title, badges) {
   return body;
 }
 
+// Reviewed: looked at, still shown. Accepted: expected; hidden from now on while the
+// object stays in this state (it shows again if it changes).
+function triageBox(r) {
+  const cur = r.triage ? r.triage.status : "new";
+  const note = h("textarea", { placeholder: "Note (why this is fine, ticket, owner...)", "aria-label": "Triage note" });
+  note.value = r.triage ? r.triage.note : "";
+  const set = async (status) => {
+    try {
+      await api("/api/triage", { c: state.c, id: r.id, status, note: note.value }, "POST");
+      const keep = r.id;
+      await refresh();
+      showResult(keep);
+    } catch (e) { $("err").textContent = e.message; }
+  };
+  const btn = (status, label) => h("button", { class: "icon-btn" + (cur === status ? " on" : ""), "data-status": status, onclick: () => set(status) }, label);
+  return h("div", { class: "triage-box", id: "triage" },
+    h("div", {}, h("b", {}, "Triage: "), cur,
+      r.triage ? h("span", { class: "hint" }, `  · ${r.triage.updated.replace("T", " ").replace("Z", "")}`) : null),
+    note,
+    h("div", { class: "btns" }, btn("reviewed", "Mark reviewed"), btn("accepted", "Accept (hide)"), cur !== "new" ? btn("new", "Clear") : null),
+    h("p", { class: "hint" }, "Accepted changes stay hidden in every comparison until the object changes again."));
+}
+
 async function showResult(id) {
   state.selected = String(id); saveHash();
   let r;
@@ -691,6 +741,7 @@ async function showResult(id) {
   const body = detailShell(r.identity, h("div", {},
     h("span", { class: "sev " + r.severity }, r.severity), "  ", h("span", { class: "chg " + r.change }, r.change), "  ",
     h("span", { class: "hint" }, r.kind)));
+  body.append(triageBox(r));
   if (r.findings.length) {
     body.append(h("h3", {}, "Findings"), ...r.findings.map((f) =>
       h("div", { class: "finding " + f.severity }, h("span", { class: "sev " + f.severity }, f.severity), "  ", h("b", {}, f.rule),
