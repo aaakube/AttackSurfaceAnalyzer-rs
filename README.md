@@ -259,14 +259,14 @@ The project is developed on Linux and cross-compiled to Windows
 (`rustup target add x86_64-pc-windows-gnu`, mingw-w64):
 
 ```bash
-cargo test                                          # unit tests (Linux)
+cargo test                                          # unit tests on the build host
 cargo build --release --target x86_64-pc-windows-gnu
 scripts/package.sh                                  # dist/asa-<version>-windows-x64.zip + .sha256
 ```
 
-Every push runs CI (`.github/workflows/rust.yml`): format and clippy for Linux and the
-Windows target, unit tests on Linux and on Windows, and the release zip, which is
-attached to the run for download.
+asa runs on Windows only. Every push runs CI (`.github/workflows/rust.yml`): format and
+clippy for the Windows target, unit tests on Windows, and the release zip, which is attached
+to the run for download.
 
 Changes are also verified on a fresh Windows 11 machine with an attack scenario covering the
 default rules, the CLI, the web API and the web UI.

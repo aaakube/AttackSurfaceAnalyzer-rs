@@ -55,13 +55,14 @@ fixes:
 
 ### 4. Faster, broader tests
 
-- **API tests on Linux.** Most API checks don't need Windows: run them in seconds
-  against a synthetic database, instead of only in the hour-long Windows suite.
+- **Fast API tests.** Most API checks don't need a prepared machine: run them as unit
+  tests against a synthetic database (seconds, in CI on Windows), instead of only in the
+  hour-long end-to-end suite.
 - **JS unit tests.** The query-editing logic (toggling, replacing, and parenthesising
   an `or` query) was tested with throwaway Node scripts and never committed. Commit
   them and run them with `cargo test` or a small script.
-- **CI.** *Done:* fmt, clippy (Linux and Windows targets), unit tests on Linux and
-  Windows, and the release zip as a downloadable artifact on every push.
+- **CI.** *Done:* fmt, clippy for the Windows target, unit tests on Windows, and the
+  release zip as a downloadable artifact on every push.
 
 ### 5. Rule quality on a busy machine
 
