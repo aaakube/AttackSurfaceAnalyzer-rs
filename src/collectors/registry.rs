@@ -39,8 +39,10 @@ const MAX_BINARY: usize = 256;
 
 pub fn decode(kind: u32, data: &[u8]) -> RegValue {
     let utf16 = |d: &[u8]| -> Vec<u16> {
-        d.chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        d.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect()
     };
     match kind {
