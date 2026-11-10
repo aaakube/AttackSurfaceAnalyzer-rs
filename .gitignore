@@ -2,7 +2,7 @@
 *.db
 *.db-wal
 *.db-shm
-/vm/.data
 /dist
-/vm/.features-run.sh
 __pycache__/
+# Local test tooling (kept out of the repository)
+/vm/

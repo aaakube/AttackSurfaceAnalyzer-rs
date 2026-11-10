@@ -252,33 +252,23 @@ files or changes:
 ## Development
 
 The project is developed on Linux and cross-compiled to Windows
-(`rustup target add x86_64-pc-windows-gnu`, mingw-w64). `vm/` holds a local Windows 11 test
-VM (QEMU/KVM) that is air-gapped by default, like the production workstation:
+(`rustup target add x86_64-pc-windows-gnu`, mingw-w64):
 
 ```bash
-vm/vm.sh install            # unattended install from the Windows 11 Enterprise LTSC evaluation ISO
-vm/test.sh [--full]         # unit tests on Windows + end-to-end scenario (+ full-drive benchmark)
-vm/features.sh              # every feature: attack scenario for the default rules, CLI, API, web UI
-                            # (Edge driven over DevTools), bundle, regressions -> feature-report.md
-vm/procmon-test.sh PROCMON64.EXE   # real Procmon capture -> attribution, notices, tree (API + Edge)
-vm/acceptance-chrome.sh     # replay a Chrome install on the 'clean' checkpoint and check every
-                            # service/firewall/COM/registry change PowerShell sees is reported
-vm/vm.sh run SCRIPT.ps1     # run a script in a visible window on the VM desktop
-vm/vm.sh ssh                # PowerShell in the VM (background session)
-vm/vm.sh tunnel 8740        # reach `asa serve` running in the VM
-vm/vm.sh checkpoint NAME / restore NAME
+cargo test                                          # unit tests (Linux)
+cargo build --release --target x86_64-pc-windows-gnu
+scripts/package.sh                                  # dist/asa-<version>-windows-x64.zip + .sha256
 ```
 
-Test runs happen in visible PowerShell windows on the VM desktop, so you can follow them on
-VNC (`127.0.0.1:5955`). `vm.sh run` also records a transcript and returns the script's
-exit status, so scripts stay automatable.
+Changes are verified on a fresh Windows 11 machine with an attack scenario covering the
+default rules, the CLI, the web API and the web UI.
 
-Measured in the VM (fresh Windows 11, all collectors): about 142,700 objects in roughly 92 s.
-A diff between two idle snapshots shows nothing at warning level. The Chrome acceptance test
-detects all 58 ground-truth changes (3 services, 1 firewall rule, 8 COM classes, 7 AppIDs,
-36 type libraries, 1 scheduled task, the vendor key and the uninstall entry). It also catches
-Chrome's Active Setup hook, and it does not report the services the installer merely
-started.
+Measured on a fresh Windows 11 install with all collectors: about 142,700 objects in
+roughly 92 s. A diff between two idle snapshots shows nothing at warning level. Replaying
+a Chrome install detects all 58 ground-truth changes (3 services, 1 firewall rule, 8 COM
+classes, 7 AppIDs, 36 type libraries, 1 scheduled task, the vendor key and the uninstall
+entry). It also catches Chrome's Active Setup hook, and it does not report the services
+the installer merely started.
 
 ## Live monitoring
 
@@ -308,7 +298,7 @@ attributed this way.
 
 In the web UI each row says who changed it ("by msiexec.exe"), the *Modified by* facet
 counts changes per process, the detail panel lists the events, and `modified_by` works in
-queries. Some changes are made by a service on the caller's behalf. In the test VM, `sc
+queries. Some changes are made by a service on the caller's behalf: `sc
 create` shows up as `services.exe` and `netsh advfirewall` as `svchost.exe`, which is what
 really wrote them.
 

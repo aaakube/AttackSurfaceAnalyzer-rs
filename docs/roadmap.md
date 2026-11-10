@@ -56,7 +56,7 @@ fixes:
 ### 4. Faster, broader tests
 
 - **API tests on Linux.** Most API checks don't need Windows: run them in seconds
-  against a synthetic database, instead of only inside the hour-long VM suite.
+  against a synthetic database, instead of only in the hour-long Windows suite.
 - **JS unit tests.** The query-editing logic (toggling, replacing, and parenthesising
   an `or` query) was tested with throwaway Node scripts and never committed. Commit
   them and run them with `cargo test` or a small script.
@@ -65,7 +65,7 @@ fixes:
 
 ### 5. Rule quality on a busy machine
 
-So far, false positives have only been measured on a clean VM with Chrome installed.
+So far, false positives have only been measured on a clean Windows install with Chrome.
 Take a few days of snapshots from a machine with real-world churn (Windows Update,
 Office, drivers, Defender platform updates) and tune the rules that cry wolf. Keep
 the idle-diff check: an untouched machine must show nothing at warning level.
@@ -80,15 +80,14 @@ panels.
 ### 7. Documentation
 
 The README has grown long. Split it into a short README (what it is, quick start)
-plus pages for the collectors, the rules and query language, the web UI, and the VM
-test setup.
+plus pages for the collectors, the rules and query language, and the web UI.
 
 ### 8. Trustworthy releases
 
 - Sign `asa.exe` (Authenticode).
 - Stamp the version and git commit into `asa --version`.
 - Make the build reproducible, so the release can be checked byte for byte against
-  what the VM suite tested.
+  what the test suite verified.
 
 This matters most on an air-gapped workstation, where the bundle arrives by hand.
 
