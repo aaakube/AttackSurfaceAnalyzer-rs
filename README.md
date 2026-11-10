@@ -1,7 +1,11 @@
-# asa — Attack Surface Analyzer for Windows, reborn
+# asa — attack surface analysis for Windows
 
-A rewrite in Rust of Microsoft's [Attack Surface Analyzer](https://github.com/microsoft/AttackSurfaceAnalyzer),
-which is no longer maintained.
+A rewrite in Rust inspired by Microsoft's
+[Attack Surface Analyzer](https://github.com/microsoft/AttackSurfaceAnalyzer), which is no
+longer maintained.
+
+> asa is an independent project. It is not affiliated with, endorsed by or supported by
+> Microsoft.
 
 You take a snapshot of a Windows machine, install or configure something, and take a second
 snapshot. `asa` then reports what changed in the attack surface:
@@ -311,5 +315,6 @@ mapping, hardening scorecards, ...).
 
 ## License
 
-MIT. The default rules are adapted from the original project's `analyses.json`
-(© Microsoft Corporation, MIT).
+MIT, see [LICENSE](LICENSE). Some default rules are adapted from Microsoft Attack Surface
+Analyzer's `analyses.json` (© Microsoft Corporation, MIT); its license and the other
+third-party notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

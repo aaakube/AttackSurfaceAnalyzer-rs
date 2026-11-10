@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 use store::Store;
 
-/// Attack Surface Analyzer for Windows: snapshot a system before and after a change
+/// asa, attack surface analysis for Windows: snapshot a system before and after a change
 /// (installing software, applying config) and report what it did to the attack surface.
 #[derive(Parser)]
 #[command(version, about)]
