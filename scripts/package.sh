@@ -12,7 +12,8 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 NAME="asa-$VERSION-windows-x64"
 STAGE="dist/$NAME"
 
-cargo test -q
+# Unit tests run on the build host first, unless ASA_SKIP_TESTS=1 (CI runs them on Windows).
+[[ ${ASA_SKIP_TESTS:-} == 1 ]] || cargo test -q
 cargo build --release --locked --target $TARGET
 rm -rf "$STAGE" "dist/$NAME.zip"
 mkdir -p "$STAGE/rules"

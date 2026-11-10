@@ -14,7 +14,7 @@ env:
 
 jobs:
   lint:
-    name: Format and clippy (Linux and Windows target)
+    name: Format and clippy (Windows target)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -26,21 +26,10 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - name: Format
       run: cargo fmt --check
-    - name: Clippy (Linux)
-      run: cargo clippy --all-targets --locked -- -D warnings
     - name: Clippy (Windows target)
       run: cargo clippy --all-targets --locked --target x86_64-pc-windows-gnu -- -D warnings
     - name: Rules lint
       run: cargo run --quiet --locked -- rules check
-
-  test-linux:
-    name: Unit tests (Linux)
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: Swatinem/rust-cache@v2
-    - name: Test
-      run: cargo test --locked
 
   test-windows:
     name: Unit tests (Windows)
@@ -53,7 +42,7 @@ jobs:
 
   package:
     name: Release bundle
-    needs: [lint, test-linux, test-windows]
+    needs: [lint, test-windows]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -64,6 +53,9 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - name: Build the zip (asa.exe, rules, README, licenses, SHA256SUMS)
       run: scripts/package.sh
+      env:
+        # Already run on Windows by test-windows.
+        ASA_SKIP_TESTS: "1"
     - uses: actions/upload-artifact@v4
       with:
         name: asa-windows-x64
