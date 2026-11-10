@@ -60,8 +60,8 @@ fixes:
 - **JS unit tests.** The query-editing logic (toggling, replacing, and parenthesising
   an `or` query) was tested with throwaway Node scripts and never committed. Commit
   them and run them with `cargo test` or a small script.
-- **CI.** Once the repository is on GitHub, run fmt, clippy (Linux and Windows
-  targets), unit tests and the Windows build on every push.
+- **CI.** *Done:* fmt, clippy (Linux and Windows targets), unit tests on Linux and
+  Windows, and the release zip as a downloadable artifact on every push.
 
 ### 5. Rule quality on a busy machine
 
