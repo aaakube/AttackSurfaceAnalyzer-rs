@@ -66,7 +66,11 @@ pub struct HandlersCollector<R: Registry> {
 fn class_roots(reg: &dyn Registry) -> Vec<(&'static str, String, Option<String>)> {
     let mut roots = vec![
         ("machine", r"HKLM\SOFTWARE\Classes".to_string(), None),
-        ("wow64", r"HKLM\SOFTWARE\WOW6432Node\Classes".to_string(), None),
+        (
+            "wow64",
+            r"HKLM\SOFTWARE\WOW6432Node\Classes".to_string(),
+            None,
+        ),
     ];
     for sid in user_sids(reg) {
         roots.push(("user", format!(r"HKU\{sid}_Classes"), Some(sid)));
@@ -94,7 +98,9 @@ impl<R: Registry> Collector for HandlersCollector<R> {
                 }
                 let cmd_key = join(&key, r"shell\open\command");
                 let command = self.reg.string(&cmd_key, "");
-                let binary = command.as_deref().and_then(|c| binaries::parse_command(c).0);
+                let binary = command
+                    .as_deref()
+                    .and_then(|c| binaries::parse_command(c).0);
                 let identity = match &sid {
                     Some(s) => format!(r"user\{s}\handler\{scheme}"),
                     None if store == "wow64" => format!(r"handler\wow64\{scheme}"),

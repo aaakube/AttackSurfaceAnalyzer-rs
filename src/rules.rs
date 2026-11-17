@@ -567,11 +567,13 @@ rules:
         let handler = |obj: Value| change(Kind::Handler, ChangeType::Created, None, Some(obj));
 
         let hijackable = handler(json!({"scheme": "x", "writable_by": ["Users"]}));
-        assert!(has(&hijackable, "URL protocol handler hijackable by non-admins"));
+        assert!(has(
+            &hijackable,
+            "URL protocol handler hijackable by non-admins"
+        ));
 
-        let writable_bin = handler(
-            json!({"scheme": "x", "binary": r"C:\t.exe", "binary_writable_by": ["Users"]}),
-        );
+        let writable_bin =
+            handler(json!({"scheme": "x", "binary": r"C:\t.exe", "binary_writable_by": ["Users"]}));
         assert!(has(
             &writable_bin,
             "URL protocol handler binary writable by non-admins"
@@ -580,7 +582,10 @@ rules:
         let unsigned = handler(
             json!({"scheme": "x", "binary": r"C:\t.exe", "binary_signature": {"status": "unsigned"}}),
         );
-        assert!(has(&unsigned, "URL protocol handler runs an unsigned binary"));
+        assert!(has(
+            &unsigned,
+            "URL protocol handler runs an unsigned binary"
+        ));
 
         // A normal signed handler nobody can tamper with raises nothing.
         let clean = handler(
@@ -601,7 +606,10 @@ rules:
             None,
             Some(json!({"name": "Svc", "account": "LocalSystem", "startable_by": ["Interactive"]})),
         );
-        assert!(has(&startable, "Privileged service startable by non-admins"));
+        assert!(has(
+            &startable,
+            "Privileged service startable by non-admins"
+        ));
         assert!(!has(&startable, "Service reconfigurable by non-admins"));
 
         // A user-account service a user can start is not flagged.
@@ -611,14 +619,19 @@ rules:
             None,
             Some(json!({"name": "Svc", "account": r"NT Service\Foo", "startable_by": ["Users"]})),
         );
-        assert!(!has(&user_svc, "Privileged service startable by non-admins"));
+        assert!(!has(
+            &user_svc,
+            "Privileged service startable by non-admins"
+        ));
 
         // Reconfigurable is always critical, regardless of account.
         let reconf = change(
             Kind::Service,
             ChangeType::Created,
             None,
-            Some(json!({"name": "Svc", "account": "LocalSystem", "reconfigurable_by": ["Everyone"]})),
+            Some(
+                json!({"name": "Svc", "account": "LocalSystem", "reconfigurable_by": ["Everyone"]}),
+            ),
         );
         assert!(has(&reconf, "Service reconfigurable by non-admins"));
     }
