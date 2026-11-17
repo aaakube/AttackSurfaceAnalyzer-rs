@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the Windows release bundle:
-#   dist/asa-<version>-windows-x64.zip   asa.exe, default rules, README, licenses, SHA256SUMS
+#   dist/asa-<version>-windows-x64.zip   asa.exe, default rules, README, docs, licenses, SHA256SUMS
 #   dist/asa-<version>-windows-x64.zip.sha256
 # On Windows, check the zip before extracting:
 #   (Get-FileHash .\asa-<version>-windows-x64.zip -Algorithm SHA256).Hash
@@ -20,7 +20,8 @@ mkdir -p "$STAGE/rules"
 cp "target/$TARGET/release/asa.exe" "$STAGE/"
 cp rules/default.yaml "$STAGE/rules/"
 cp README.md LICENSE THIRD_PARTY_NOTICES.md "$STAGE/"
-(cd "$STAGE" && sha256sum asa.exe rules/default.yaml README.md LICENSE THIRD_PARTY_NOTICES.md > SHA256SUMS)
+cp -r docs "$STAGE/"
+(cd "$STAGE" && sha256sum asa.exe rules/default.yaml README.md LICENSE THIRD_PARTY_NOTICES.md docs/*.md > SHA256SUMS)
 python3 -I - "$STAGE" "dist/$NAME.zip" <<'PY'
 import os, sys, zipfile
 src, out = sys.argv[1], sys.argv[2]

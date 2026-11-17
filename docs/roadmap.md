@@ -78,10 +78,11 @@ with the keyboard. Make them real buttons with visible focus, add arrow-key
 navigation in the tree, and make long paths wrap or truncate sensibly in narrow
 panels.
 
-### 7. Documentation
+### 7. Documentation *(done)*
 
-The README has grown long. Split it into a short README (what it is, quick start)
-plus pages for the collectors, the rules and query language, and the web UI.
+The README is now a short overview; the details live in `docs/` (usage, collectors,
+rules, deployment, Procmon, internals) with a measured comparison against the
+original in `docs/comparison.md`. The release zip ships the `docs/` folder.
 
 ### 8. Trustworthy releases
 
