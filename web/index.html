@@ -163,6 +163,7 @@ td.before { color: var(--deleted); } td.after { color: var(--created); }
       <h2>Comparisons</h2>
       <div id="comparisons"></div>
       <div id="facets"></div>
+      <div id="analysis"></div>
     </div>
     <div id="side-browse" style="display:none">
       <h2>Run</h2>
@@ -514,8 +515,8 @@ async function refresh() {
     : h("tr", {}, h("th", { style: "width:74px" }, "Kind"), h("th", { style: "width:46%" }, "Item"), h("th", {}, "Summary")));
   renderNotices();
   const mySeq = ++seq;
-  if (state.mode === "compare") loadFacets(mySeq);
-  else { $("cards").replaceChildren(); $("facets").replaceChildren(); }
+  if (state.mode === "compare") { loadFacets(mySeq); loadAnalysis(); }
+  else { $("cards").replaceChildren(); $("facets").replaceChildren(); $("analysis").replaceChildren(); }
   if (tree) await loadTree(mySeq); else await loadMore(mySeq);
 }
 
@@ -649,6 +650,24 @@ function select(tr) {
 
 // Severity, kind and change are counted as if their own term were not in the query,
 // so with `kind = service` the Kind facet still lists the other kinds to switch to.
+// Post-diff analyzers (see analyzers.rs). The diff is already shown; this panel
+// reports which analysis passes ran over it and how many findings each added.
+async function loadAnalysis() {
+  const el = $("analysis");
+  if (!el) return;
+  if (state.mode !== "compare" || !state.c) { el.replaceChildren(); return; }
+  let r;
+  try { r = await api("/api/analysis", { c: state.c }); } catch { el.replaceChildren(); return; }
+  const states = Object.fromEntries((r.modules || []).map((m) => [m.module, m]));
+  const rows = (r.available || []).map((a) => {
+    const m = states[a.name];
+    const label = !m ? "running…" : m.state === "failed" ? "failed" : (m.detail || "done");
+    return h("div", { class: "list-item", title: a.description || "" },
+      a.name, h("small", {}, label));
+  });
+  el.replaceChildren(h("h2", {}, "Analysis"), ...(rows.length ? rows : [h("div", { class: "hint" }, "None.")]));
+}
+
 async function loadFacets(mySeq) {
   let f;
   try {
