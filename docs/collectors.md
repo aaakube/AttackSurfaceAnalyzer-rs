@@ -37,7 +37,7 @@ not attack surface. Secrets are never read: no private keys, Wi-Fi keys or passw
 | Kind | Identity | Main fields |
 |---|---|---|
 | `file` | path | see [below](#files) |
-| `service`, `driver` | service name | `display_name`, `type`, `start`, `delayed_start`, `account`, `image_path`, `binary`, `unquoted_path`, `service_dll`, `failure_command`, `binary_missing`, `binary_signature.*`, `binary_writable_by`, `key_writable_by` |
+| `service`, `driver` | service name | `display_name`, `type`, `start`, `delayed_start`, `account`, `image_path`, `binary`, `unquoted_path`, `service_dll`, `failure_command`, `binary_missing`, `binary_signature.*`, `binary_writable_by`, `key_writable_by`, `startable_by`, `reconfigurable_by`. The last two come from the service's own DACL: low-privileged principals who can start it (attack surface when it runs as SYSTEM) and who can change its config or permissions (repoint the binary → run code as the service account). |
 | `firewall` | `rule\<store>\<id>`, `profile\<store>\<profile>` | rules: `name`, `action`, `direction`, `enabled`, `profiles`, `protocol`, `local_ports`, `remote_ports`, `remote_addresses`, `program`, `service`; profiles: `firewall_enabled`, `default_inbound`, `default_outbound`. Store is `local` or `gpo`. |
 | `com` | `clsid\{..}`, `clsid32\{..}`, `user\<sid>\clsid\{..}`, `appid\{..}`, `typelib\{..}` | classes: `name`, `progid`, `inproc_server`, `local_server`, `server`, `server_signature.*`, `server_writable_by`, `elevation`, `shadows_machine`; AppIDs: `local_service`, `run_as`, `dll_surrogate`, `launch_permission`, `access_permission`; type libraries: `versions` |
 | `registry` | key path (`HKLM\...`, `HKU\<sid>\...`) | `values.<name>`, `subkeys` (at the depth limit), `writable_by` |

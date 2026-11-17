@@ -561,6 +561,40 @@ rules:
     }
 
     #[test]
+    fn default_rules_for_service_permissions() {
+        let rs = RuleSet::load(None).unwrap();
+        let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
+
+        // The LibreOfficeMaintenance case: SYSTEM service any user can start.
+        let startable = change(
+            Kind::Service,
+            ChangeType::Created,
+            None,
+            Some(json!({"name": "Svc", "account": "LocalSystem", "startable_by": ["Interactive"]})),
+        );
+        assert!(has(&startable, "Privileged service startable by non-admins"));
+        assert!(!has(&startable, "Service reconfigurable by non-admins"));
+
+        // A user-account service a user can start is not flagged.
+        let user_svc = change(
+            Kind::Service,
+            ChangeType::Created,
+            None,
+            Some(json!({"name": "Svc", "account": r"NT Service\Foo", "startable_by": ["Users"]})),
+        );
+        assert!(!has(&user_svc, "Privileged service startable by non-admins"));
+
+        // Reconfigurable is always critical, regardless of account.
+        let reconf = change(
+            Kind::Service,
+            ChangeType::Created,
+            None,
+            Some(json!({"name": "Svc", "account": "LocalSystem", "reconfigurable_by": ["Everyone"]})),
+        );
+        assert!(has(&reconf, "Service reconfigurable by non-admins"));
+    }
+
+    #[test]
     fn default_rules_for_tasks_defender_and_rights() {
         let rs = RuleSet::load(None).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);

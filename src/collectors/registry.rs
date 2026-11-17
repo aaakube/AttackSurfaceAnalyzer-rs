@@ -103,6 +103,12 @@ pub trait Registry: Sync {
             _ => None,
         }
     }
+
+    /// Raw bytes of a value, for binary blobs (e.g. a service security descriptor)
+    /// that the JSON-oriented `value` summarizes. `None` off Windows or when absent.
+    fn binary(&self, _path: &str, _name: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// The name a key's unnamed value is reported under.
@@ -163,7 +169,7 @@ mod win_impl {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
         HKEY, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ, KEY_WOW64_64KEY, RegCloseKey,
-        RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW,
+        RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryInfoKeyW, RegQueryValueExW,
     };
 
     pub struct WinRegistry;
@@ -289,6 +295,33 @@ mod win_impl {
 
         fn writable_by(&self, path: &str) -> Vec<String> {
             crate::collectors::win::key_writable_by(path)
+        }
+
+        fn binary(&self, path: &str, name: &str) -> Option<Vec<u8>> {
+            let k = open(path)?;
+            let wn: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut len = 0u32;
+            let rc = unsafe {
+                RegQueryValueExW(k.0, wn.as_ptr(), null(), null_mut(), null_mut(), &mut len)
+            };
+            if rc != ERROR_SUCCESS || len == 0 {
+                return None;
+            }
+            let mut buf = vec![0u8; len as usize];
+            let rc = unsafe {
+                RegQueryValueExW(
+                    k.0,
+                    wn.as_ptr(),
+                    null(),
+                    null_mut(),
+                    buf.as_mut_ptr(),
+                    &mut len,
+                )
+            };
+            (rc == ERROR_SUCCESS).then(|| {
+                buf.truncate(len as usize);
+                buf
+            })
         }
     }
 }
