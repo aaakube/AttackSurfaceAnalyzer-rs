@@ -11,8 +11,12 @@ and what it would take. Nothing here is scheduled yet.
 Several recent features have only been tested on small comparisons, not at the
 100,000+ changes a real workstation produces:
 
-- **Hide accepted.** Every list, facet, tree and export query recomputes each row's
-  triage state with a correlated subquery (content hash → triage table).
+- **Hide accepted.** *(done)* The triage state key (change + object hash) is now
+  materialized onto each result row (`results.state_key`) at comparison-build time, so
+  hiding accepted rows and the triage facet are an indexed triage lookup instead of a
+  per-row blob-hash subquery. Measured ~3.4x on the hide-accepted count over 60k rows
+  (`cargo test bench_hide_accepted -- --ignored --nocapture`); the gap widens with real
+  blob sizes. Old databases backfill the column once on open.
 - **Facet counts.** Kind, change and severity are each counted without their own
   term, so one refresh can send up to four facet requests, each running several
   `GROUP BY`s.

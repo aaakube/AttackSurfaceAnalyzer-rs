@@ -141,13 +141,18 @@ pub struct Progress {
     pub changes: AtomicU64,
 }
 
-/// SQL for the triage state of result row `r`: its change type and the content hash of
-/// the object (after the change, or before it for a deletion).
-pub const TRIAGE_STATE_SQL: &str = "r.change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(r.compare_blob, r.base_blob))))";
+/// Expression (over an unqualified `results` row) that computes the triage state key:
+/// the change type and the content hash of the object (after the change, or before it
+/// for a deletion). Used once per comparison at build time to fill `results.state_key`.
+pub const STATE_KEY_EXPR: &str = "change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(compare_blob, base_blob))))";
+
+/// SQL for the triage state of result row `r`. Now a materialized column (see
+/// [`STATE_KEY_EXPR`]), so reads are a plain column instead of a per-row hash subquery.
+pub const TRIAGE_STATE_SQL: &str = "r.state_key";
 
 /// SQL for the triage status (accepted, reviewed or NULL) of result row `r`.
-pub const TRIAGE_STATUS_SQL: &str = "(SELECT t.status FROM triage t WHERE t.kind = r.kind AND t.identity = r.identity \
-     AND t.state = r.change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(r.compare_blob, r.base_blob)))))";
+pub const TRIAGE_STATUS_SQL: &str = "(SELECT t.status FROM triage t \
+     WHERE t.kind = r.kind AND t.identity = r.identity AND t.state = r.state_key)";
 
 pub const TRIAGE_STATUSES: &[&str] = &["accepted", "reviewed"];
 
@@ -263,6 +268,10 @@ impl Store {
                  base_blob    INTEGER,
                  compare_blob INTEGER,
                  diffs        TEXT NOT NULL,
+                 -- Triage state key (change + ':' + hex object hash), materialized at
+                 -- build time so hiding accepted rows and the triage facet are an
+                 -- indexed lookup instead of a per-row blob-hash subquery.
+                 state_key    TEXT NOT NULL DEFAULT '',
                  PRIMARY KEY (comparison, id)
              ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS results_by_severity
@@ -337,6 +346,25 @@ impl Store {
                  PRIMARY KEY (kind, identity, state)
              ) WITHOUT ROWID;",
         )?;
+        // Backfill the materialized triage state key on databases whose `results`
+        // predate the column. Runs once (new rows default to '') and is set-based.
+        let has_state_key: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('results') WHERE name = 'state_key'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        if !has_state_key {
+            conn.execute_batch(
+                "ALTER TABLE results ADD COLUMN state_key TEXT NOT NULL DEFAULT '';",
+            )?;
+            // One-time backfill for comparisons built before the column existed. Later
+            // comparisons fill it at build time, so this never runs on a fresh database
+            // (and never per request — open() runs this block only when migrating).
+            conn.execute(
+                &format!("UPDATE results SET state_key = {STATE_KEY_EXPR} WHERE state_key = ''"),
+                [],
+            )?;
+        }
         crate::query::register_functions(&conn)?;
         Ok(Store { conn })
     }
@@ -432,6 +460,12 @@ impl Store {
                 Ok(())
             })?;
         }
+        // Materialize the triage state key once, so every later list/facet/count/export
+        // reads a plain column instead of hashing each row's object again.
+        tx.execute(
+            &format!("UPDATE results SET state_key = {STATE_KEY_EXPR} WHERE comparison = ?1"),
+            [id],
+        )?;
         tx.execute(
             "UPDATE comparisons SET total = ?2, complete = 1 WHERE id = ?1",
             params![id, total],
@@ -921,6 +955,61 @@ mod tests {
         store
             .finish_run(id, &["files".into()], &BTreeMap::new(), 0)
             .unwrap();
+    }
+
+    /// Compare the old per-row hash subquery against the materialized state_key on a
+    /// large comparison. Ignored by default (slow to build); run with:
+    ///   cargo test bench_hide_accepted -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_hide_accepted() {
+        use std::time::Instant;
+        const N: usize = 60_000;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(&dir.path().join("big.db")).unwrap();
+        let mk = |tag: i64| {
+            (0..N)
+                .map(|i| {
+                    rec(
+                        Kind::File,
+                        &format!("C:\\f\\{i}.dat"),
+                        json!({ "size": i as i64 + tag }),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        snapshot(&mut store, "a", mk(0));
+        snapshot(&mut store, "b", mk(1)); // every file modified
+        let (rules, hash) = crate::rules::RuleSet::load_hashed(None).unwrap();
+        let t = Instant::now();
+        let c = store.comparison("a", "b", &rules, &hash, None).unwrap();
+        eprintln!(
+            "built {} changes in {:.3}s",
+            c.total,
+            t.elapsed().as_secs_f64()
+        );
+
+        let old = "change || ':' || lower(hex((SELECT hash FROM blobs WHERE id = COALESCE(r.compare_blob, r.base_blob))))";
+        let count = |expr: &str| {
+            let sql = format!(
+                "SELECT COUNT(*) FROM results r WHERE r.comparison = {} AND COALESCE(\
+                 (SELECT t.status FROM triage t WHERE t.kind = r.kind AND t.identity = r.identity AND t.state = {expr}), '') != 'accepted'",
+                c.id
+            );
+            let t = Instant::now();
+            let n: i64 = store.conn().query_row(&sql, [], |r| r.get(0)).unwrap();
+            (n, t.elapsed().as_secs_f64())
+        };
+        // Warm the cache equally, then measure.
+        count("r.state_key");
+        count(old);
+        let (n1, new_s) = count("r.state_key");
+        let (n2, old_s) = count(old);
+        eprintln!(
+            "hide-accepted over {N} rows:  old subquery {old_s:.3}s  →  state_key {new_s:.3}s  ({:.1}x)",
+            old_s / new_s
+        );
+        assert_eq!(n1, n2);
     }
 
     #[test]
