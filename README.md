@@ -29,8 +29,8 @@ From an **elevated** PowerShell:
 .\asa.exe diff before after     # or a report in the terminal
 ```
 
-Download `asa-windows-x64` from the latest successful
-[CI run](https://github.com/aaakube/AttackSurfaceAnalyzer-rs/actions), or build it yourself:
+Download the zip from [Releases](https://github.com/aaakube/AttackSurfaceAnalyzer-rs/releases)
+(check it against its `.sha256`), or build it yourself:
 
 ```bash
 scripts/package.sh              # dist/asa-<version>-windows-x64.zip + .sha256
