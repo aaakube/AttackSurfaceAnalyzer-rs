@@ -1,0 +1,44 @@
+# Local privilege-escalation surface in Windows services.
+#
+# On an air-gapped workstation there is no network to move through, so turning a
+# standard-user foothold into SYSTEM is the whole attack. These checks read only what
+# the services collector already captured (account, who can reconfigure/start the
+# service, who can overwrite its binary) — they never touch the live machine.
+#
+# `startable_by` / `reconfigurable_by` already list *only* low-privilege principals, so
+# a non-empty list is itself the dangerous condition.
+name: service-escalation
+description: >
+  Windows services a standard user can reconfigure, start, or whose binary they can
+  overwrite — each a path from an ordinary user to the service's account.
+checks:
+  - rule: service-reconfigurable-by-standard-user
+    severity: critical
+    description: >
+      A standard user can change this service's configuration, including its binary
+      path — letting them run their own code as the service account.
+    match: >
+      kind = 'service'
+      AND json_array_length(json_extract(obj, '$.reconfigurable_by')) > 0
+
+  - rule: service-binary-writable-by-standard-user
+    severity: critical
+    description: >
+      A standard user can overwrite this service's executable, running their own code
+      the next time it starts.
+    match: >
+      kind = 'service'
+      AND json_array_length(json_extract(obj, '$.binary_writable_by')) > 0
+
+  - rule: privileged-service-startable-by-standard-user
+    severity: warning
+    description: >
+      A standard user can start this service, which runs with high privilege — useful
+      to an attacker chaining it with another weakness.
+    match: >
+      kind = 'service'
+      AND json_array_length(json_extract(obj, '$.startable_by')) > 0
+      AND (
+        COALESCE(json_extract(obj, '$.account'), '') = ''
+        OR json_extract(obj, '$.account') LIKE '%System%'
+      )

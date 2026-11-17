@@ -312,6 +312,18 @@ impl Store {
              CREATE TABLE IF NOT EXISTS attributed (
                  comparison INTEGER PRIMARY KEY REFERENCES comparisons(id) ON DELETE CASCADE
              );
+             -- One row per analyzer that has run against a comparison (see analyzers.rs).
+             -- Analyzers are post-diff passes over the already-materialized results; this
+             -- marker makes each one run once, independently, and lets the UI show which
+             -- have finished without blocking the diff.
+             CREATE TABLE IF NOT EXISTS analysis (
+                 comparison INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE CASCADE,
+                 module     TEXT NOT NULL,
+                 state      TEXT NOT NULL,
+                 detail     TEXT NOT NULL DEFAULT '',
+                 updated    TEXT NOT NULL,
+                 PRIMARY KEY (comparison, module)
+             ) WITHOUT ROWID;
              -- Triage decisions. A decision covers one object in one state (its change
              -- type and content hash), so it carries over to every comparison showing
              -- that same change, and lapses when the object changes again.

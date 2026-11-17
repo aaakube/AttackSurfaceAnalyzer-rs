@@ -43,6 +43,7 @@ scripts/package.sh              # dist/asa-<version>-windows-x64.zip + .sha256
 | [Usage](docs/usage.md) | Commands, web UI, query language, triage |
 | [What is collected](docs/collectors.md) | Every collector and its fields |
 | [Rules](docs/rules.md) | Writing and checking detection rules |
+| [Analyzer plugins](docs/plugins.md) | Post-diff analysis passes you can add per technology |
 | [Air-gapped deployment](docs/deployment.md) | Installing safely on an offline workstation |
 | [Process Monitor](docs/procmon.md) | Seeing which process made each change |
 | [Internals](docs/internals.md) | Storage, scaling, development and CI |
