@@ -217,7 +217,9 @@ pub fn signable(lower_path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub use ffi::{key_writable_by, read_with_backup, security, service_access, sid_and_name, signature};
+pub use ffi::{
+    key_writable_by, read_with_backup, security, service_access, sid_and_name, signature,
+};
 
 #[cfg(windows)]
 mod ffi {
