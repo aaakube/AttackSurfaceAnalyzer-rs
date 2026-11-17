@@ -1,3 +1,4 @@
+mod analyzers;
 mod collectors;
 mod diff;
 mod model;
@@ -58,6 +59,9 @@ enum Command {
         /// Rules file (YAML). Defaults to the built-in rules.
         #[arg(long)]
         rules: Option<PathBuf>,
+        /// Directory of extra analyzer plugins (*.yaml) to load alongside the built-ins.
+        #[arg(long)]
+        plugins: Option<PathBuf>,
         /// Open the UI in the default browser.
         #[arg(long)]
         open: bool,
@@ -283,9 +287,10 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Serve {
             listen,
             rules,
+            plugins,
             open,
         } => {
-            web::serve(cli.db, rules, &listen, open)?;
+            web::serve(cli.db, rules, plugins, &listen, open)?;
             Ok(ExitCode::SUCCESS)
         }
     }

@@ -100,6 +100,18 @@ original in `docs/comparison.md`. The release zip ships the `docs/` folder.
 
 ## Part 2: ideas for security assessors
 
+> **Analyzer plugins have landed** (see [plugins.md](plugins.md)). The diff is now a
+> fast first phase; separate *analyzers* run over the materialized comparison afterwards
+> and add findings, without blocking the diff and without touching the live machine. An
+> analyzer is a YAML manifest of SQL checks over the captured snapshot, so assessors can
+> add technology-specific checks per product without rebuilding asa. Several items below
+> are now best built as analyzers rather than core code: the privilege-escalation paths
+> (#1), the hardening scorecard (#10) and the ActiveX flags (#11) all fit the model. The
+> next step for #11 is for the COM collector to record `safe_for_scripting`,
+> `safe_for_init` and `kill_bit`; the `activex-exploitability` analyzer already ships and
+> lights up the moment those fields exist. A later cleanup is to move the cross-cutting
+> rules now in `rules/default.yaml` (services, handlers) into analyzers.
+
 ### 1. Privilege-escalation paths
 
 asa already knows, for every privileged thing that runs code (services, tasks, WMI

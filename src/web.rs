@@ -50,15 +50,22 @@ struct App {
     job: Mutex<Option<Job>>,
     /// Serializes linking results to Procmon captures (see procmon.rs).
     attributing: Mutex<()>,
+    /// Serializes running post-diff analyzers (see analyzers.rs).
+    analyzing: Mutex<()>,
+    /// Built-in and plugin analyzers, loaded once at startup.
+    analyzers: Vec<crate::analyzers::Analyzer>,
 }
 
 pub fn serve(
     db: PathBuf,
     rules_path: Option<PathBuf>,
+    plugins_dir: Option<PathBuf>,
     listen: &str,
     open_browser: bool,
 ) -> Result<()> {
     let (rules, rules_hash) = RuleSet::load_hashed(rules_path.as_deref())?;
+    let analyzers = crate::analyzers::load(plugins_dir.as_deref())?;
+    eprintln!("loaded {} analyzers", analyzers.len());
     Store::open(&db)?; // fail fast on a bad database
     let server = Server::http(listen).map_err(|e| anyhow!("listening on {listen}: {e}"))?;
     let addr = server.server_addr().to_ip().context("server address")?;
@@ -98,6 +105,8 @@ pub fn serve(
         hosts,
         computing: Mutex::new(()),
         attributing: Mutex::new(()),
+        analyzing: Mutex::new(()),
+        analyzers,
         job: Mutex::new(None),
     });
     for req in server.incoming_requests() {
@@ -196,6 +205,7 @@ fn handle(app: &App, req: Request) {
         (Method::Get, "/api/tree") => tree(app, &params),
         (Method::Post, "/api/triage") => set_triage(app, &params),
         (Method::Get, "/api/result") => result_detail(app, &params),
+        (Method::Get, "/api/analysis") => analysis_status(app, &params),
         (Method::Get, "/api/objects") => objects(app, &params),
         (Method::Get, "/api/object") => object_detail(app, &params),
         _ => Err(ApiError::NotFound(format!("{method} {path}"))),
@@ -281,6 +291,23 @@ fn runs(app: &App) -> Result<Value, ApiError> {
     Ok(json!({ "runs": store.runs()?, "comparisons": store.comparisons()? }))
 }
 
+/// Which post-diff analyzers have run for a comparison, and their outcome. The UI polls
+/// this to show each module's state while the diff is already readable.
+fn analysis_status(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
+    let c = get_i64(p, "c", -1)?;
+    {
+        let _guard = app.analyzing.lock().unwrap_or_else(|e| e.into_inner());
+        crate::analyzers::ensure_analysis(&open(app)?, c, &app.analyzers)?;
+    }
+    let modules = crate::analyzers::status(&open(app)?, c)?;
+    let available: Vec<Value> = app
+        .analyzers
+        .iter()
+        .map(|a| json!({ "name": a.name, "description": a.description, "checks": a.checks.len() }))
+        .collect();
+    Ok(json!({ "available": available, "modules": modules }))
+}
+
 fn compare(app: &App, p: &HashMap<String, String>) -> Result<Value, ApiError> {
     let (base, compare) = (get(p, "base")?, get(p, "compare")?);
     if base == compare {
@@ -333,6 +360,12 @@ fn result_filter(app: &App, p: &HashMap<String, String>) -> Result<ResultFilter,
         // `modified_by` and the process facet read the attribution of this comparison.
         let _guard = app.attributing.lock().unwrap_or_else(|e| e.into_inner());
         crate::procmon::ensure_attribution(&open(app)?, c)?;
+    }
+    {
+        // Post-diff analyzers add findings over the materialized comparison. Cheap once
+        // done (one EXISTS per analyzer); the diff itself was already shown.
+        let _guard = app.analyzing.lock().unwrap_or_else(|e| e.into_inner());
+        crate::analyzers::ensure_analysis(&open(app)?, c, &app.analyzers)?;
     }
     let q = p.get("q").map(String::as_str).unwrap_or("");
     let compiled = query::compile(q, Scope::Results).map_err(bad)?;
@@ -1154,6 +1187,8 @@ mod tests {
             hosts: vec![],
             computing: Mutex::new(()),
             attributing: Mutex::new(()),
+            analyzing: Mutex::new(()),
+            analyzers: crate::analyzers::builtins().unwrap(),
             job: Mutex::new(None),
         };
         let level = |prefix: &str, q: &str| -> Vec<(String, i64, i64, bool)> {
