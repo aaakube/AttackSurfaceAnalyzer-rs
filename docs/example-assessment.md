@@ -1,10 +1,19 @@
-# Worked example: assessing LibreOffice with asa
+# Worked example: assessing two thick clients with asa
 
-This is a complete, if small, product security assessment driven by asa, kept as a
-worked example of the workflow in [usage](usage.md). The target is **LibreOffice
-26.8.3** (the 64-bit MSI), installed on a clean Windows 11 24H2 VM. It is not a
-LibreOffice audit — the point is the method: snapshot, install, diff, then spend the
-testing effort where the diff points.
+Two small product security assessments driven by asa, kept as a worked example of the
+workflow in [usage](usage.md): **LibreOffice 26.8.3** and **VLC 3.0.24**, each installed
+from its MSI on a clean Windows 11 24H2 VM. Neither is an audit of the product — the
+point is the method (snapshot, install, diff, then spend the testing effort where the
+diff points) and how the *same* method surfaces *different* attack surface in two
+different thick clients.
+
+Jump to: [LibreOffice](#libreoffice-2683) · [VLC](#vlc-3024) · [side by side](#the-two-side-by-side).
+
+## LibreOffice 26.8.3
+
+The target is LibreOffice 26.8.3 (the 64-bit MSI). It is not a LibreOffice audit — the
+point is the method: snapshot, install, diff, then spend the testing effort where the
+diff points.
 
 > Scope: a single `clean → installed` transition, machine-wide, all collectors, plus
 > manual checks for the things asa does not collect (service DACLs before they were a
@@ -140,21 +149,102 @@ same `asa diff` against each new version to review only what changed.
 `program\intl\fbintl.dll`. Low reachability; worth asking the vendor why they ship
 unsigned, as it weakens any "all code is signed" allow-listing policy.
 
+## VLC 3.0.24
+
+Same method, a different thick client: VLC 3.0.24 (64-bit MSI, `msiexec /qn`). The install
+produced **972 file changes**, 2 COM registrations, 2 registry changes and no new service.
+Where LibreOffice's risk was a local privilege boundary, VLC's is **remote** — it exposes
+its media parsers to the browser.
+
+| # | Finding | Severity | Status |
+|---|---|---|---|
+| 1 | Browser-scriptable ActiveX control over the media engine | Medium–High | Confirmed |
+| 2 | No Control Flow Guard on any of 365 binaries | Medium | Confirmed |
+| 3 | 113 media file associations → one-click parser entry | Low–Medium | Confirmed (by design) |
+| 4 | No new service, no new listeners, install dir not user-writable | — | Confirmed clean |
+
+### 1. Browser-scriptable ActiveX control
+
+asa's COM collector reported two new classes, both served by `axvlc.dll` (validly signed by
+VideoLAN): "VLC ActiveX Plugin and IE Web Plugin" v1 and v2. A manual look at each CLSID's
+`Implemented Categories` shows both are marked **Safe for Scripting** and **Safe for
+Initialization**, with **no kill-bit** set:
+
+```
+CLSID {9BE31822-…} / {E23FE9C6-…}  (axvlc.dll, signed)
+  category: SAFE FOR SCRIPTING
+  category: SAFE FOR INITIALIZATION
+  kill-bit: not set
+```
+
+That combination means any web page rendered in a legacy ActiveX host — Internet Explorer,
+Edge's IE mode, or any application embedding the WebBrowser/MSHTML control — can instantiate
+VLC's control, hand it a media URL or data, and script it, reaching VLC's demuxers and
+decoders remotely. VLC's ActiveX plugin has a history of memory-corruption CVEs, and (finding
+#2) none of VLC's binaries have CFG, so a parser bug reached this way is more readily
+exploitable. **Recommendation:** if IE-mode is in use anywhere, set the kill-bit for these
+CLSIDs by policy, or install VLC without the ActiveX plugin feature (the MSI exposes it).
+
+### 2. No Control Flow Guard
+
+All **365** of VLC's PE binaries lack CFG, including the demuxers and codecs whose entire job
+is parsing untrusted media. Only `vlc-cache-gen.exe` also lacks ASLR; DEP and ASLR are
+otherwise on. For a media player this is the central mitigation gap — it governs the
+exploitability of every finding above.
+
+### 3. File associations and clean negatives
+
+VLC registers **113** media file associations (`VLC.mkv.Document`, `.mp4`, … →
+`vlc.exe … "%1"`), so double-clicking or drive-by-downloading a crafted media file opens
+VLC's parser — the one-click counterpart to the ActiveX path. The handler collector found
+**no** URL protocol handler (VLC registers file types, not a `scheme:`), and the service
+collector found **no** new service — both true negatives worth recording. The install
+directory is not user-writable (`Users:(RX)`), so there is no binary-planting surface.
+No new listening ports or firewall rules were added.
+
+## The two side by side
+
+The same three-command workflow surfaced two different risk profiles:
+
+| | LibreOffice 26.8.3 | VLC 3.0.24 |
+|---|---|---|
+| Headline surface | **local**: SYSTEM service any user can start | **remote**: browser-scriptable ActiveX control |
+| New service | `LibreOfficeMaintenance` (SYSTEM, user-startable) | none |
+| Browser surface | — | `axvlc.dll`, safe-for-scripting, no kill-bit |
+| Entry via a file | shell extensions + URL handler | 113 file associations |
+| CFG coverage | 0 / 192 binaries | 0 / 365 binaries |
+| Install dir writable by users | no | no |
+| New trusted roots (Windows root-update) | 2 (Certum) | 2 (USERTrust, DigiCert) |
+| New listeners / firewall rules | none | none |
+
+The trusted-root rows are the same Windows behaviour seen from two vendors: verifying either
+signed installer made Windows pull roots from its automatic-root-update program into
+`AuthRoot`/`Root`. asa reports them as critical; distinguishing them from software-added roots
+is on the [roadmap](roadmap.md).
+
 ## What asa could not answer
 
-An honest assessment names its blind spots. For this target, other tools are still needed
-for: the dynamic behaviour of the update service (finding #1's residual risk), its IPC
-surface (named pipes / LPC), fuzzing the document parsers, and code review. asa maps the
-attack surface and ranks where to look; it does not prove exploitability.
+An honest assessment names its blind spots. Other tools are still needed for: the dynamic
+behaviour of LibreOffice's update service (its residual risk), IPC surfaces (named pipes /
+LPC), fuzzing the document and media parsers, and code review. asa maps the attack surface
+and ranks where to look; it does not prove exploitability.
 
-Two of the gaps this exercise exposed have since been closed in asa itself: the service
-collector now records `startable_by`/`reconfigurable_by`, and a `handler` collector covers
-URL protocol handlers — both of which produced findings here that the first pass missed.
+Each target also exposed a gap in asa itself, which is part of why they are kept here:
+
+- LibreOffice → the service collector now records `startable_by`/`reconfigurable_by`, and a
+  `handler` collector now covers URL protocol handlers (both produced findings the first pass
+  missed).
+- VLC → the COM collector sees the ActiveX class but not its **safety flags** (safe-for-
+  scripting / -initialization) or **kill-bit**, which decide whether a web page can script it.
+  Recording those on COM objects is the natural next collector enhancement (on the
+  [roadmap](roadmap.md)); here it was a manual registry check.
 
 ## Reproducing
 
-Everything above is reproducible with the commands in [Method](#method) plus the manual
-checks in the assessment scripts kept alongside the benchmark (`scripts/bench.ps1` and the
-`sc.exe sdshow` / `icacls` one-liners quoted in each finding). The bundled-component
-versions come from each DLL's `ProductVersion`; the CVE status from the upstream advisories
-current at the release date.
+Both assessments are reproducible with the commands in [Method](#method) against each MSI,
+plus the manual checks quoted in the findings (`sc.exe sdshow`, `icacls`, and the ActiveX
+`Implemented Categories` / kill-bit registry reads). The bundled-component versions come from
+each DLL's `ProductVersion`; the CVE status from the upstream advisories current at the
+release date. VLC installs cleanly only from its MSI under `msiexec /qn`; its NSIS `.exe`
+returns before its elevated child finishes writing, which splits the install across the two
+snapshots.
