@@ -210,7 +210,20 @@ benchmark level, shipped as a rules file. Show pass/fail per setting with the
 evidence value, and track it across runs. That gives a quick hardening picture even
 with a single snapshot, and shows whether a change made it better or worse.
 
-### 11. Run asa and import data from the web UI
+### 11. ActiveX safety flags on COM objects
+
+The COM collector records a class's server and signature but not whether it is marked
+**Safe for Scripting** / **Safe for Initialization** (its `Implemented Categories`) or
+whether the **kill-bit** is set (`ActiveX Compatibility` compatibility flags `0x400`).
+Those decide whether a web page in a legacy ActiveX host (IE, Edge IE mode, an embedded
+WebBrowser control) can instantiate and script the control — the difference between an
+ordinary COM server and remote attack surface. Collect them as `safe_for_scripting`,
+`safe_for_init` and `kill_bit`, and add a rule: a safe-for-scripting control with no
+kill-bit, served by a binary without CFG, is browser-reachable parser surface. Exposed by
+the VLC assessment (see [example](example-assessment.md)), where `axvlc.dll` is
+safe-for-scripting with no kill-bit.
+
+### 12. Run asa and import data from the web UI
 
 Today the web UI only reads: you collect and import Procmon captures from a
 terminal. Make the UI the single place to work:
