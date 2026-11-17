@@ -6,6 +6,7 @@ mod procmon;
 mod query;
 mod report;
 mod rules;
+mod sddl;
 mod store;
 mod web;
 
@@ -49,6 +50,11 @@ enum Command {
     /// Validate and inspect rule files.
     #[command(subcommand)]
     Rules(RulesCommand),
+    /// Decode an SDDL security-descriptor string into a readable ACL.
+    Sddl {
+        /// The SDDL string, e.g. "O:SYG:SYD:(A;;FA;;;BA)".
+        descriptor: String,
+    },
     /// List or clear triage decisions (made in the web UI).
     #[command(subcommand)]
     Triage(TriageCommand),
@@ -286,6 +292,16 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Diff(args) => diff(&cli.db, args),
         Command::Runs(cmd) => runs(&cli.db, cmd),
         Command::Rules(cmd) => rules_cmd(cmd),
+        Command::Sddl { descriptor } => match sddl::decode(&descriptor) {
+            Some(acl) => {
+                print!("{}", acl.render());
+                Ok(ExitCode::SUCCESS)
+            }
+            None => {
+                eprintln!("could not decode that string as SDDL");
+                Ok(ExitCode::FAILURE)
+            }
+        },
         Command::Procmon(cmd) => procmon_cmd(&cli.db, cmd),
         Command::Triage(cmd) => triage_cmd(&cli.db, cmd),
         Command::Serve {
