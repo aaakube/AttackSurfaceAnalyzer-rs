@@ -71,6 +71,12 @@ Take a few days of snapshots from a machine with real-world churn (Windows Updat
 Office, drivers, Defender platform updates) and tune the rules that cry wolf. Keep
 the idle-diff check: an untouched machine must show nothing at warning level.
 
+Known case: installing LibreOffice made Windows add two Certum roots to `AuthRoot` and
+`Root` (automatic root update while verifying the installer's signature), which the
+"New trusted root certificate" rule reports as critical. A root that appears in `AuthRoot`
+with the same thumbprint, and is in Microsoft's root program, deserves a lower severity
+than one added to `Root` alone or by Group Policy.
+
 ### 6. Web UI accessibility
 
 Facets, severity cards and tree nodes are clickable `div`s, so they can't be reached

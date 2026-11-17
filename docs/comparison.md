@@ -105,6 +105,50 @@ Both tools found the 200 modified files. The other changes are background activi
 Windows during the run (logs, caches, updates). The original's port and service changes come
 from ephemeral ports and run state, which asa deliberately leaves out of snapshots.
 
+## Real install: LibreOffice 26.8.3
+
+A larger test: each tool snapshots the machine, LibreOffice 26.8.3 is installed silently from
+its 376 MB MSI (`msiexec /qn`), and each tool snapshots and compares again. asa ran all its
+collectors; the original ran the same collector set as above.
+
+### Time and size
+
+| | Original | asa |
+|---|---:|---:|
+| Snapshot before | 160.9 s | 110.6 s (first run, cold cache) |
+| Snapshot after | 172.7 s | 60.3 s |
+| Compare | 196.4 s | 4.6 s |
+| **Total** | **530 s** | **175 s** (3× faster) |
+| Database | 4,088 MB in 7 files | 168 MB |
+| Changes reported | 22,911 | 15,347 |
+
+### What each tool found
+
+| What changed | Original | asa |
+|---|---|---|
+| Files installed | 13,845 files | the same 13,845, plus 161 more (109 TrueType and 18 OpenType fonts, 9 Start Menu shortcuts, ...) and 1,162 new folders |
+| Unsigned executables | 18 (15 from LibreOffice + 3 Windows files changed by background servicing) | the same 15 from LibreOffice (pip launchers, `fbintl.dll`, ...) |
+| "Expired signature" | 21 warnings | none: 19 of these binaries (Visual C++ runtime, drivers) are correctly timestamped and verify as **valid**; the other 2 did not change |
+| Service `LibreOfficeMaintenance` (`update_service.exe`, LocalSystem, manual start) | ✓ (information) | ✓ (warning: new service running as SYSTEM; the binary is validly signed by The Document Foundation) |
+| Other services | 3 warnings (`gpsvc`, `smphost`, `msiserver`): only their running state changed | none (run state is not collected) |
+| COM registrations | none from the COM collector | 21 classes, 2 AppIDs, 2 type libraries, and the shell extension approval (warning) |
+| Registry | 8,974 raw key changes, all at DEBUG level | the uninstall entry, the vendor key, the shell extension approval |
+| Trusted roots | 1 root (Certum Trusted Network CA 2), counted twice (current user and machine views) | 2 roots (Certum Trusted Network CA and CA 2), each in Root and AuthRoot (critical) |
+| Ports | 4 ephemeral UDP ports closed | 1 mDNS listener changed, 1 dynamic DNS port group gone |
+
+Notes:
+
+- **The new roots most likely come from Windows, not LibreOffice.** LibreOffice is signed
+  through Certum, and the roots appeared in `AuthRoot`, the store Windows' automatic root
+  update fills when it verifies a signature chaining to a root of the Microsoft program. It
+  is still a real change to what the machine trusts, so it is right to report it, but
+  telling these apart from roots added by software is on the [roadmap](roadmap.md).
+- **Both tools found every LibreOffice binary.** The original missed fonts, shortcuts and
+  folders, and buried the COM and registry changes in 8,974 DEBUG-level registry rows. asa
+  reported them as typed COM objects with rules.
+- **False alarms:** the original raised 24 warnings that asa does not: 21 expired-signature
+  warnings on timestamped binaries and 3 run-state changes.
+
 ## Features
 
 ### Collectors
