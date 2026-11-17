@@ -47,6 +47,7 @@ scripts/package.sh              # dist/asa-<version>-windows-x64.zip + .sha256
 | [Process Monitor](docs/procmon.md) | Seeing which process made each change |
 | [Internals](docs/internals.md) | Storage, scaling, development and CI |
 | [Comparison with the original](docs/comparison.md) | Features and measured speed |
+| [Worked example](docs/example-assessment.md) | A LibreOffice assessment driven by asa |
 | [Roadmap](docs/roadmap.md) | Planned improvements and ideas |
 
 ## License
