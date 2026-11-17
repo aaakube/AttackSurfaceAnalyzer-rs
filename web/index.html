@@ -298,10 +298,21 @@ function cmp(extra) {
 }
 
 // ---------------------------------------------------------------- sidebar
-let runs = [], comparisons = [];
+let runs = [], comparisons = [], runsSig = "";
 async function loadRuns() {
   const r = await api("/api/runs");
   runs = r.runs; comparisons = r.comparisons;
+  // Re-render only when something actually changed (new/updated runs or
+  // comparisons, or a different selection). This lets a background poll pick up
+  // runs collected elsewhere without flickering the list or disturbing an open
+  // dropdown when nothing changed.
+  const sig = JSON.stringify([
+    runs.map((x) => [x.id, x.objects, x.complete, x.warnings]),
+    comparisons.map((c) => [c.id, c.total]),
+    state.run, state.c,
+  ]);
+  if (sig === runsSig) return;
+  runsSig = sig;
   for (const sel of [$("base"), $("compare")]) {
     const keep = sel.value;
     sel.replaceChildren(...runs.map((x) => h("option", { value: x.id }, `${x.id}  (${x.objects.toLocaleString()} objects)`)));
@@ -791,6 +802,11 @@ document.addEventListener("keydown", (e) => {
   await refresh();
   // Deep link to one item: #...&item=<result id or object path>
   if (item !== null) state.mode === "compare" ? showResult(Number(item)) : showObject(item);
+  // Pick up runs and comparisons created elsewhere (e.g. `asa collect` from a
+  // terminal) without needing a manual page reload.
+  const pollRuns = () => { if (document.visibilityState === "visible") loadRuns().catch(() => {}); };
+  setInterval(pollRuns, 4000);
+  document.addEventListener("visibilitychange", pollRuns);
 })();
 </script>
 </body>
