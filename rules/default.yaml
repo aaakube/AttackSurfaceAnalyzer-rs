@@ -530,7 +530,7 @@ rules:
             - { field: run_as, exists: true }
 
   - name: Unsigned COM server
-    severity: warning
+    severity: error
     kinds: [com]
     changes: [created, modified]
     when: { field: server_signature.status, eq: unsigned }
@@ -1273,3 +1273,311 @@ rules:
     changes: [created]
     when: { field: name, exists: true }
 
+
+  # ================================================================
+  # Extended high-sensitivity coverage. These lean toward catching
+  # more (false positives preferred over misses): living-off-the-land
+  # binaries, masquerading, user-writable execution, and persistence
+  # spots not covered above. Lower a rule's severity or delete it if a
+  # given environment makes it too noisy.
+  # ================================================================
+
+  # ---------------------------------------------------------------- files: masquerading & suspicious locations
+  - name: System binary name outside a system directory
+    description: A file named like a core Windows binary (svchost, lsass, ...) found outside System32/SysWOW64/WinSxS is a classic masquerade.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - field: path
+          regex: '(?i)\\(svchost|lsass|services|csrss|winlogon|smss|wininit|taskhostw|dllhost|conhost|spoolsv|lsaiso|fontdrvhost|dwm|explorer|rundll32|searchindexer)\.exe$'
+        - not: { field: path, regex: '(?i)\\(system32|syswow64|winsxs|servicing)\\' }
+
+  - name: Double extension executable
+    description: A name like invoice.pdf.exe hides the real executable extension behind a document one.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex: '(?i)\.(pdf|docx?|xlsx?|pptx?|jpe?g|png|gif|txt|zip|rar|7z|rtf|html?|csv)\.(exe|scr|com|bat|cmd|pif|js|jse|vbs|vbe|wsf|wsh|hta|ps1|lnk|msi)$'
+
+  - name: Script in a user-writable location
+    description: Scripts dropped into temp, AppData, ProgramData or Public are a common staging and persistence spot.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: format, eq: script }
+        - field: path
+          regex:
+            - '(?i)\\appdata\\(local|roaming|locallow)\\'
+            - '(?i)^[a-z]:\\users\\public\\'
+            - '(?i)^[a-z]:\\programdata\\'
+            - '(?i)\\temp\\'
+            - '(?i)\\downloads\\'
+
+  - name: Executable or script in a web content directory
+    description: Code under inetpub, wwwroot or htdocs is a likely web shell.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - field: path
+          regex: '(?i)\\(inetpub|wwwroot|htdocs|www)\\'
+        - any:
+            - { field: executable, eq: true }
+            - { field: format, eq: script }
+
+  - name: Executable in a drive root
+    description: Executables are rarely placed directly in a drive root; droppers sometimes do.
+    severity: warning
+    kinds: [file]
+    changes: [created]
+    when:
+      field: path
+      regex: '(?i)^[a-z]:\\[^\\]+\.(exe|scr|pif|com|bat|cmd)$'
+
+  - name: Reparse point in a protected location
+    description: A symbolic link or junction placed in a system or program directory can redirect trusted loads elsewhere.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: target, exists: true }
+        - field: path
+          regex: '(?i)^[a-z]:\\(windows|program files( \(x86\))?)\\'
+
+  - name: Executable owned by a non-administrator
+    description: Trusted program files are normally owned by SYSTEM, Administrators or TrustedInstaller; other owners can also usually modify the file.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - not: { field: owner, regex: '(?i)(system|administrators|trustedinstaller)' }
+
+  # ---------------------------------------------------------------- services: LOLBins & custom accounts
+  - name: Service runs a script host or living-off-the-land binary
+    description: Services whose executable is cmd, PowerShell, rundll32, regsvr32, mshta and the like run whatever their configuration points them at.
+    severity: error
+    kinds: [service, driver]
+    changes: [created, modified]
+    when:
+      any:
+        - field: binary
+          regex: '(?i)\\(powershell|pwsh|cmd|rundll32|regsvr32|mshta|wscript|cscript|certutil|bitsadmin|installutil|regasm|regsvcs|msbuild|wmic|forfiles|cmstp|scriptrunner|mavinject|hh)\.exe'
+        - field: image_path
+          regex: '(?i)(frombase64string|downloadstring|invoke-|-enc(odedcommand)?\s|iex\b|\\(powershell|pwsh|mshta|rundll32|regsvr32)\.exe)'
+
+  - name: Service runs under a custom account
+    description: Most services run as a well-known account; a custom account is worth confirming.
+    severity: warning
+    kinds: [service]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: account, exists: true }
+        - not:
+            field: account
+            regex: '(?i)^(localsystem|\.?\\?localservice|\.?\\?networkservice|nt authority\\|nt service\\|$)'
+
+  - name: Service DLL in a user-writable location
+    description: A svchost-hosted service whose DLL sits in temp, AppData or ProgramData can be hijacked.
+    severity: error
+    kinds: [service]
+    changes: [created, modified]
+    when:
+      field: service_dll
+      regex: ['(?i)\\appdata\\', '(?i)^[a-z]:\\users\\public\\', '(?i)^[a-z]:\\programdata\\', '(?i)\\temp\\']
+
+  # ---------------------------------------------------------------- COM: redirection, LOLBins, locations
+  - name: COM TreatAs redirection set
+    description: TreatAs makes one CLSID resolve to another server, a stealthy way to hijack a trusted class.
+    severity: warning
+    kinds: [com]
+    changes: [created, modified]
+    when: { field: treat_as, exists: true }
+
+  - name: COM server is a script host or living-off-the-land binary
+    description: A COM class whose server is mshta, rundll32, PowerShell or similar executes arbitrary code when instantiated.
+    severity: error
+    kinds: [com]
+    changes: [created, modified]
+    when:
+      any:
+        - field: server
+          regex: '(?i)\\(powershell|pwsh|cmd|rundll32|regsvr32|mshta|wscript|cscript|scriptrunner)\.exe'
+        - field: inproc_server
+          regex: '(?i)\\(scrobj|mshtml|jscript|vbscript)\.dll'
+
+  - name: COM server in a user-writable location
+    description: An in-process or local COM server under temp, AppData or ProgramData can be replaced to run code in any host that loads the class.
+    severity: error
+    kinds: [com]
+    changes: [created, modified]
+    when:
+      any:
+        - field: server
+          regex: ['(?i)\\appdata\\', '(?i)\\temp\\', '(?i)^[a-z]:\\programdata\\', '(?i)^[a-z]:\\users\\public\\']
+        - field: inproc_server
+          regex: ['(?i)\\appdata\\', '(?i)\\temp\\', '(?i)^[a-z]:\\programdata\\', '(?i)^[a-z]:\\users\\public\\']
+
+  # ---------------------------------------------------------------- firewall: removals & risky allows
+  - name: Firewall block rule removed
+    description: Deleting a blocking rule can re-expose something that was deliberately shut off.
+    severity: warning
+    kinds: [firewall]
+    changes: [deleted]
+    when:
+      all:
+        - { field: type, eq: rule }
+        - { field: action, eq: block }
+
+  - name: Firewall allows inbound for a program in a user-writable location
+    description: An inbound allow for a program under temp or AppData exposes attacker-replaceable code to the network.
+    severity: error
+    kinds: [firewall]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: direction, eq: in }
+        - { field: action, eq: allow }
+        - { field: enabled, eq: true }
+        - field: program
+          regex: ['(?i)\\appdata\\', '(?i)\\temp\\', '(?i)^[a-z]:\\programdata\\', '(?i)^[a-z]:\\users\\public\\']
+
+  # ---------------------------------------------------------------- registry: more persistence & tampering
+  - name: Command processor AutoRun set
+    description: Commands under the Command Processor AutoRun value run every time cmd.exe starts.
+    severity: error
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\command processor(\\|$)' }
+        - any:
+            - { field: change, eq: created }
+            - { field: values, changed: true }
+
+  - name: Security tool disabled by policy
+    description: Policy values that disable Task Manager, the registry editor or the command prompt often accompany an intrusion.
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      field: values
+      contains: [DisableTaskMgr, DisableRegistryTools, DisableCMD, DisableChangePassword, NoDispCPL, HideSCAHealth]
+
+  - name: Netsh helper DLL registered
+    description: DLLs listed under the Netsh key load into netsh.exe and can persist code.
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when: { field: path, regex: '(?i)\\microsoft\\netsh(\\|$)' }
+
+  - name: Office add-in or trusted-location key changed
+    description: Office add-in registrations and trusted locations can be abused for document-triggered code execution.
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      field: path
+      regex: '(?i)\\microsoft\\office\\.*\\(addins|security\\trusted locations|resiliency|security\\trusted documents)'
+
+  - name: Terminal Services initial program or startup set
+    description: An RDP session can be made to launch an arbitrary program on connect.
+    severity: warning
+    kinds: [registry]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '(?i)\\terminal server\\' }
+        - { field: values, changed: true }
+
+  # ---------------------------------------------------------------- accounts & groups
+  - name: Privileged group membership changed
+    description: Any change to the membership of a privileged group (Administrators, Backup Operators, ...) deserves review.
+    severity: warning
+    kinds: [group]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - any:
+            - { field: change, eq: created }
+            - { field: members, changed: true }
+
+  # ---------------------------------------------------------------- certificates: trust anchors
+  - name: Self-signed certificate in a trusted store
+    description: A self-signed certificate added to a root or publisher store anchors trust in something no CA vouches for.
+    severity: error
+    kinds: [certificate]
+    changes: [created]
+    when:
+      all:
+        - { field: self_signed, eq: true }
+        - { field: store, in: [Root, AuthRoot, TrustedPublisher] }
+
+  - name: Weak key in a trusted certificate
+    description: An RSA/DSA key under 2048 bits in a trust store is below modern strength and easier to forge.
+    severity: warning
+    kinds: [certificate]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: store, in: [Root, AuthRoot, TrustedPublisher, My] }
+        - { field: key_bits, gt: 0 }
+        - { field: key_bits, lt: 2048 }
+
+  # ---------------------------------------------------------------- ports
+  - name: Listening program is a script host or shell
+    description: A listener served by cmd, PowerShell, mshta or similar is almost always a backdoor.
+    severity: error
+    kinds: [port]
+    changes: [created, modified]
+    when:
+      field: process_name
+      regex: '(?i)^(powershell|pwsh|cmd|rundll32|regsvr32|mshta|wscript|cscript|nc|ncat|netcat)(\.exe)?$'
+
+  - name: Listener on a commonly abused port
+    description: Ports frequently used by remote-access tools and backdoors.
+    severity: warning
+    kinds: [port]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: port, in: [4444, 4445, 5555, 6666, 1337, 31337, 12345, 54321, 9001, 1080, 8081, 8443] }
+        - { field: scope, ne: loopback }
+
+  # ---------------------------------------------------------------- scheduled tasks
+  - name: Scheduled task uses a COM handler
+    description: A task whose action is a COM handler runs a registered class instead of a visible binary, which is easy to miss.
+    severity: warning
+    kinds: [task]
+    changes: [created, modified]
+    when: { field: com_handler, exists: true }
+
+  # ---------------------------------------------------------------- WMI
+  - name: WMI consumer runs an encoded or downloading command
+    description: Encoded or network-fetching commands in a permanent WMI consumer are a stealthy persistence technique.
+    severity: error
+    kinds: [wmi]
+    changes: [created, modified]
+    when:
+      field: command_line
+      regex: '(?i)(\s-e(nc|ncodedcommand)?\s|frombase64string|downloadstring|downloadfile|invoke-webrequest|\biwr\b|start-bitstransfer|https?://)'
+
+  - name: WMI event filter watches process or logon events
+    description: Filters keyed on process creation or logon are the usual trigger for WMI-based persistence.
+    severity: warning
+    kinds: [wmi]
+    changes: [created, modified]
+    when:
+      field: query
+      regex: '(?i)(__instancecreationevent|win32_process|win32_logonsession|win32_ntlogevent|registrytreechangeevent|registryvaluechangeevent)'
