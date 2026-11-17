@@ -77,6 +77,74 @@ pub fn writable_by(aces: &[Ace]) -> Vec<String> {
     granted_to(aces, WRITE_MASK)
 }
 
+// Service-specific access rights (winsvc.h).
+pub const SERVICE_CHANGE_CONFIG: u32 = 0x0002;
+pub const SERVICE_START: u32 = 0x0010;
+pub const SERVICE_STOP: u32 = 0x0020;
+const WRITE_DAC: u32 = 0x0004_0000;
+const WRITE_OWNER: u32 = 0x0008_0000;
+/// Rights that let a principal point the service at a new binary or rewrite its
+/// permissions, i.e. run code as the service account: change the config, or take
+/// over the security descriptor.
+pub const SERVICE_RECONFIG_MASK: u32 = SERVICE_CHANGE_CONFIG | WRITE_DAC | WRITE_OWNER;
+
+/// Expands the GENERIC_* bits of a service access mask into the specific rights
+/// they map to (the SERVICE_GENERIC_MAPPING), so a grant of GENERIC_ALL or
+/// GENERIC_EXECUTE is recognised as start/stop/reconfigure access.
+pub fn map_service_generic(mask: u32) -> u32 {
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const GENERIC_EXECUTE: u32 = 0x2000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const READ_CONTROL: u32 = 0x0002_0000;
+    const SERVICE_ALL_ACCESS: u32 = 0x000F_0000 | 0x01FF;
+    let mut m = mask;
+    if mask & GENERIC_READ != 0 {
+        m |= READ_CONTROL | 0x0001 | 0x0004 | 0x0008 | 0x0080;
+    }
+    if mask & GENERIC_WRITE != 0 {
+        m |= READ_CONTROL | SERVICE_CHANGE_CONFIG;
+    }
+    if mask & GENERIC_EXECUTE != 0 {
+        m |= READ_CONTROL | SERVICE_START | SERVICE_STOP | 0x0040 | 0x0100;
+    }
+    if mask & GENERIC_ALL != 0 {
+        m |= SERVICE_ALL_ACCESS;
+    }
+    m
+}
+
+/// Who (among low-privileged principals) may start a service and who may
+/// reconfigure it, derived from the service's DACL.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ServiceAccess {
+    pub startable_by: Vec<String>,
+    pub reconfigurable_by: Vec<String>,
+}
+
+/// Evaluates a service DACL: which low-privileged principals can start it, and
+/// which can reconfigure it (repoint the binary or rewrite the DACL). Generic
+/// bits are expanded first so GENERIC_EXECUTE/ALL grants are not missed.
+pub fn service_principals(aces: &[Ace]) -> ServiceAccess {
+    let mapped: Vec<Ace> = aces
+        .iter()
+        .map(|a| match a {
+            Ace::Allow { sid, mask } => Ace::Allow {
+                sid,
+                mask: map_service_generic(*mask),
+            },
+            Ace::Deny { sid, mask } => Ace::Deny {
+                sid,
+                mask: map_service_generic(*mask),
+            },
+        })
+        .collect();
+    ServiceAccess {
+        startable_by: granted_to(&mapped, SERVICE_START),
+        reconfigurable_by: granted_to(&mapped, SERVICE_RECONFIG_MASK),
+    }
+}
+
 /// Low-privileged principals that can read the object.
 pub fn readable_by(aces: &[Ace]) -> Vec<String> {
     granted_to(aces, READ_MASK)
@@ -149,7 +217,7 @@ pub fn signable(lower_path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub use ffi::{key_writable_by, read_with_backup, security, sid_and_name, signature};
+pub use ffi::{key_writable_by, read_with_backup, security, service_access, sid_and_name, signature};
 
 #[cfg(windows)]
 mod ffi {
@@ -182,8 +250,8 @@ mod ffi {
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, LookupAccountSidW,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+        DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorDacl,
+        LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
     };
 
     const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -397,8 +465,8 @@ mod ffi {
         Ok(out)
     }
 
-    /// (writable_by, readable_by) of a DACL.
-    unsafe fn dacl_access(dacl: *mut ACL) -> (Vec<String>, Vec<String>) {
+    /// Non-inherit-only allow/deny ACEs of a DACL as `(sid, mask, is_deny)`.
+    unsafe fn dacl_aces(dacl: *mut ACL) -> Vec<(String, u32, bool)> {
         let mut info: ACL_SIZE_INFORMATION = unsafe { std::mem::zeroed() };
         let ok = unsafe {
             GetAclInformation(
@@ -409,7 +477,7 @@ mod ffi {
             )
         };
         if ok == 0 {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         }
         let mut sids: Vec<(String, u32, bool)> = Vec::new();
         for i in 0..info.AceCount {
@@ -433,8 +501,11 @@ mod ffi {
                 sids.push((s, mask, header.AceType == ACCESS_DENIED_ACE_TYPE));
             }
         }
-        let aces: Vec<Ace> = sids
-            .iter()
+        sids
+    }
+
+    fn as_aces(sids: &[(String, u32, bool)]) -> Vec<Ace<'_>> {
+        sids.iter()
             .map(|(sid, mask, deny)| {
                 if *deny {
                     Ace::Deny { sid, mask: *mask }
@@ -442,8 +513,37 @@ mod ffi {
                     Ace::Allow { sid, mask: *mask }
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    /// (writable_by, readable_by) of a DACL.
+    unsafe fn dacl_access(dacl: *mut ACL) -> (Vec<String>, Vec<String>) {
+        let sids = unsafe { dacl_aces(dacl) };
+        let aces = as_aces(&sids);
         (writable_by(&aces), readable_by(&aces))
+    }
+
+    /// Parses a service's self-relative security descriptor (its raw
+    /// `Services\<name>\Security\Security` registry value) into who may start and
+    /// reconfigure it. `None` when the descriptor has no explicit DACL (the service
+    /// then inherits the SCM default, which does not widen access).
+    pub fn service_access(sd: &[u8]) -> Option<super::ServiceAccess> {
+        let mut present: i32 = 0;
+        let mut dacl: *mut ACL = null_mut();
+        let mut defaulted: i32 = 0;
+        let ok = unsafe {
+            GetSecurityDescriptorDacl(
+                sd.as_ptr() as PSECURITY_DESCRIPTOR,
+                &mut present,
+                &mut dacl,
+                &mut defaulted,
+            )
+        };
+        if ok == 0 || present == 0 || dacl.is_null() {
+            return None;
+        }
+        let sids = unsafe { dacl_aces(dacl) };
+        Some(super::service_principals(&as_aces(&sids)))
     }
 
     /// Runs WinVerifyTrust, returning the HRESULT and the leaf signer's name.
@@ -672,6 +772,54 @@ mod tests {
             }]),
             vec!["Authenticated Users"]
         );
+    }
+
+    #[test]
+    fn service_dacl_evaluation() {
+        // The LibreOfficeMaintenance DACL: INTERACTIVE gets start/stop, Everyone
+        // (via the audit-like full grant the MSI set) gets everything.
+        let interactive = "S-1-5-4";
+        let everyone = "S-1-1-0";
+        let acc = service_principals(&[
+            Ace::Allow {
+                sid: interactive,
+                mask: SERVICE_START | SERVICE_STOP,
+            },
+            Ace::Allow {
+                sid: everyone,
+                mask: SERVICE_CHANGE_CONFIG,
+            },
+        ]);
+        assert_eq!(acc.startable_by, vec!["Interactive"]);
+        assert_eq!(acc.reconfigurable_by, vec!["Everyone"]);
+
+        // A normal service: only privileged SIDs in the DACL → nothing flagged.
+        let empty = service_principals(&[Ace::Allow {
+            sid: "S-1-5-32-544",
+            mask: 0xF01FF,
+        }]);
+        assert!(empty.startable_by.is_empty() && empty.reconfigurable_by.is_empty());
+
+        // GENERIC_ALL to Users is expanded into start and reconfigure rights.
+        let generic = service_principals(&[Ace::Allow {
+            sid: "S-1-5-32-545",
+            mask: 0x1000_0000,
+        }]);
+        assert_eq!(generic.startable_by, vec!["Users"]);
+        assert_eq!(generic.reconfigurable_by, vec!["Users"]);
+
+        // A deny of start (canonical first) neutralises a later generic-execute grant.
+        let denied = service_principals(&[
+            Ace::Deny {
+                sid: "S-1-5-11",
+                mask: SERVICE_START,
+            },
+            Ace::Allow {
+                sid: "S-1-5-11",
+                mask: 0x2000_0000,
+            },
+        ]);
+        assert!(denied.startable_by.is_empty());
     }
 
     #[test]

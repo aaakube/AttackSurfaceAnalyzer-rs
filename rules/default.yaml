@@ -286,6 +286,25 @@ rules:
     changes: [created, modified]
     when: { field: key_writable_by, exists: true }
 
+  - name: Service reconfigurable by non-admins
+    description: The service's own permissions let a low-privileged user change its config or DACL, repointing the binary to run code as the service account.
+    severity: critical
+    kinds: [service, driver]
+    changes: [created, modified]
+    when: { field: reconfigurable_by, exists: true }
+
+  - name: Privileged service startable by non-admins
+    description: A SYSTEM or service account service that any user can start on demand; its handling of caller input and update files becomes privilege-escalation surface.
+    severity: warning
+    kinds: [service]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: startable_by, exists: true }
+        - any:
+            - { field: account, regex: '(?i)^(localsystem|nt authority\\(system|localservice|networkservice))$' }
+            - { field: account, exists: false }
+
   - name: Unquoted service path with spaces
     description: Windows tries each space-separated prefix (C:\Program.exe, ...) before the real binary.
     severity: error

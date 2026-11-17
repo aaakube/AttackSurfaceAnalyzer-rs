@@ -32,6 +32,8 @@ pub const FIELDS: &[&str] = &[
     "binary_signature",
     "binary_writable_by",
     "key_writable_by",
+    "startable_by",
+    "reconfigurable_by",
 ];
 
 #[derive(Serialize, Default)]
@@ -63,6 +65,14 @@ struct ServiceObject {
     binary_writable_by: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     key_writable_by: Vec<String>,
+    /// Low-privileged principals who can start the service (from its DACL). When the
+    /// service runs as SYSTEM, this is attack surface the caller can trigger.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    startable_by: Vec<String>,
+    /// Low-privileged principals who can change its configuration or rewrite its
+    /// DACL, i.e. repoint the binary and run code as the service account.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reconfigurable_by: Vec<String>,
 }
 
 const TYPE_KERNEL_DRIVER: u64 = 0x1;
@@ -113,6 +123,22 @@ pub struct ServicesCollector<R: Registry> {
     pub threads: usize,
 }
 
+impl<R: Registry> ServicesCollector<R> {
+    /// Who may start or reconfigure the service, parsed from its DACL
+    /// (`Services\<name>\Security\Security`). Empty off Windows or when the service
+    /// has no explicit descriptor.
+    fn service_access(&self, key: &str) -> win::ServiceAccess {
+        #[cfg(windows)]
+        if let Some(sd) = self.reg.binary(&join(key, "Security"), "Security")
+            && let Some(access) = win::service_access(&sd)
+        {
+            return access;
+        }
+        let _ = key;
+        win::ServiceAccess::default()
+    }
+}
+
 impl<R: Registry> Collector for ServicesCollector<R> {
     fn name(&self) -> &'static str {
         "services"
@@ -149,7 +175,10 @@ impl<R: Registry> Collector for ServicesCollector<R> {
                 ),
                 None => (None, false),
             };
+            let access = self.service_access(&key);
             let obj = ServiceObject {
+                startable_by: access.startable_by,
+                reconfigurable_by: access.reconfigurable_by,
                 display_name: self.reg.string(&key, "DisplayName"),
                 r#type: type_name(ty),
                 start: start_name(start),
@@ -313,6 +342,8 @@ mod tests {
             }),
             binary_writable_by: vec!["Users".into()],
             key_writable_by: vec!["Users".into()],
+            startable_by: vec!["Interactive".into()],
+            reconfigurable_by: vec!["Everyone".into()],
             ..Default::default()
         };
         crate::collectors::assert_fields(&obj, FIELDS);
