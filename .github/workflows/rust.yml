@@ -3,6 +3,8 @@ name: Rust
 on:
   push:
     branches: [ "master" ]
+    # Pushing a tag like v0.2.0 also publishes a GitHub release with the zip.
+    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
 
@@ -63,3 +65,27 @@ jobs:
           dist/*.zip
           dist/*.zip.sha256
         if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+    - name: Tag must match the Cargo.toml version
+      run: |
+        version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+        [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version $version"; exit 1; }
+    - uses: actions/download-artifact@v4
+      with:
+        name: asa-windows-x64
+        path: dist
+    - name: Publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 \
+          --title "asa $GITHUB_REF_NAME" --generate-notes --verify-tag

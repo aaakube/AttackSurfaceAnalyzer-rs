@@ -49,6 +49,12 @@ Every push runs `.github/workflows/rust.yml`:
    `asa rules check` on the default rules.
 2. **test-windows:** `cargo test` on a Windows runner.
 3. **package:** builds the release zip and attaches it to the run as `asa-windows-x64`.
+4. **release** (tags only): pushing a tag `vX.Y.Z` that matches the version in `Cargo.toml`
+   publishes a GitHub release with the zip and its `.sha256`:
+
+   ```bash
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
 
 Changes are also verified on a fresh Windows 11 machine with an attack scenario covering the
 default rules, the CLI, the web API and the web UI. Replaying a Chrome install detects all

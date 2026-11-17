@@ -8,7 +8,7 @@ On a machine with Rust and mingw-w64:
 scripts/package.sh      # runs the tests, builds dist/asa-<version>-windows-x64.zip
 ```
 
-Or download the `asa-windows-x64` artifact from a CI run. Then, on the target machine:
+Or download the zip and its `.sha256` from the project's GitHub Releases. Then, on the target machine:
 
 ```powershell
 (Get-FileHash .\asa-<version>-windows-x64.zip -Algorithm SHA256).Hash   # must match the .sha256 file
