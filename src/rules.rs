@@ -561,6 +561,35 @@ rules:
     }
 
     #[test]
+    fn default_rules_for_url_handlers() {
+        let rs = RuleSet::load(None).unwrap();
+        let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
+        let handler = |obj: Value| change(Kind::Handler, ChangeType::Created, None, Some(obj));
+
+        let hijackable = handler(json!({"scheme": "x", "writable_by": ["Users"]}));
+        assert!(has(&hijackable, "URL protocol handler hijackable by non-admins"));
+
+        let writable_bin = handler(
+            json!({"scheme": "x", "binary": r"C:\t.exe", "binary_writable_by": ["Users"]}),
+        );
+        assert!(has(
+            &writable_bin,
+            "URL protocol handler binary writable by non-admins"
+        ));
+
+        let unsigned = handler(
+            json!({"scheme": "x", "binary": r"C:\t.exe", "binary_signature": {"status": "unsigned"}}),
+        );
+        assert!(has(&unsigned, "URL protocol handler runs an unsigned binary"));
+
+        // A normal signed handler nobody can tamper with raises nothing.
+        let clean = handler(
+            json!({"scheme": "x", "binary": r"C:\t.exe", "binary_signature": {"status": "valid"}}),
+        );
+        assert!(names(&rs, &clean).is_empty());
+    }
+
+    #[test]
     fn default_rules_for_service_permissions() {
         let rs = RuleSet::load(None).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);

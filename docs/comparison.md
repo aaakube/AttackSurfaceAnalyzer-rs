@@ -156,7 +156,7 @@ Notes:
 | Area | Original | asa |
 |---|:---:|:---:|
 | Files (signatures, PE mitigations, permissions) | ✓ | ✓ (catalog-aware signatures, `writable_by`) |
-| Services, drivers | ✓ | ✓ (unquoted paths, writable binaries and keys) |
+| Services, drivers | ✓ | ✓ (unquoted paths, writable binaries and keys, who can start/reconfigure) |
 | Firewall | ✓ | ✓ (local and Group Policy stores) |
 | COM | ✓ | ✓ (AppIDs, type libraries, per-user hijacks) |
 | Registry | whole registry, or chosen hives (`--hives`) | persistence locations + custom keys (`--registry-key`) |
@@ -173,6 +173,7 @@ Notes:
 | User rights (privileges) | — | ✓ |
 | Security options (UAC, WDigest, LSA, NTLM, SMB, RDP) | — | ✓ |
 | WMI event subscriptions | — | ✓ |
+| URL protocol handlers (`scheme:` launch paths) | — | ✓ |
 
 ### Analysis and workflow
 

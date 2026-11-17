@@ -27,6 +27,7 @@ defaults:
   wmi: warning
   tpm: warning
   key: info
+  handler: info
 
 rules:
   # ---------------------------------------------------------------- signatures
@@ -321,6 +322,27 @@ rules:
   - name: Unsigned service binary
     severity: error
     kinds: [service]
+    changes: [created, modified]
+    when: { field: binary_signature.status, eq: unsigned }
+
+  - name: URL protocol handler hijackable by non-admins
+    description: A low-privileged user can rewrite this scheme's handler key and choose what runs when any user follows a link to it.
+    severity: warning
+    kinds: [handler]
+    changes: [created, modified]
+    when: { field: writable_by, exists: true }
+
+  - name: URL protocol handler binary writable by non-admins
+    description: The program a scheme launches can be replaced by any user, so following a link runs their code.
+    severity: critical
+    kinds: [handler]
+    changes: [created, modified]
+    when: { field: binary_writable_by, exists: true }
+
+  - name: URL protocol handler runs an unsigned binary
+    description: A scheme launches an unsigned program with attacker-controlled arguments from a link.
+    severity: warning
+    kinds: [handler]
     changes: [created, modified]
     when: { field: binary_signature.status, eq: unsigned }
 
