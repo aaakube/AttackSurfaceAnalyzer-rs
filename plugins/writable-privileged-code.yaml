@@ -1,0 +1,35 @@
+# Privileged code a standard user can overwrite — a single cross-kind view.
+#
+# This is the classic local privilege-escalation primitive: something runs with high
+# privilege (a service as LocalSystem, a scheduled task, a WMI consumer, a COM server,
+# the program behind a listening port), and a standard user is allowed to overwrite its
+# executable. Replace the file, wait for it to run, and your code runs with its
+# privileges. On an air-gapped box, where there is no network to move through, that one
+# step is often the whole attack.
+#
+# The point of this analyzer is *cross-kind* reach. Each collector records who can
+# overwrite the binary under a different field name — services and tasks and WMI use
+# `binary_writable_by`, COM uses `server_writable_by`, ports use `process_writable_by` —
+# so no single per-object rule can state "any privileged executable a user can
+# overwrite". An analyzer can, because it runs SQL over the whole comparison at once and
+# can coalesce those fields into one finding. (Per-object rules in rules/default.yaml
+# still catch each kind individually; this unifies them for the assessor.)
+name: writable-privileged-code
+description: >
+  Executables that run with high privilege but that a standard user can overwrite,
+  across services, scheduled tasks, WMI consumers, COM servers and listening ports — a
+  unified local privilege-escalation view.
+checks:
+  - rule: privileged-binary-writable-by-standard-user
+    severity: critical
+    description: >
+      A standard user can overwrite the executable this privileged component runs. They
+      can replace it and run their own code with its privileges the next time it starts.
+    match: >
+      kind IN ('service', 'task', 'wmi', 'com', 'port')
+      AND json_array_length(COALESCE(
+            json_extract(obj, '$.binary_writable_by'),
+            json_extract(obj, '$.server_writable_by'),
+            json_extract(obj, '$.process_writable_by'),
+            '[]'
+          )) > 0

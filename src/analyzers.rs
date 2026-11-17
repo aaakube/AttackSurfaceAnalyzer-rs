@@ -72,6 +72,10 @@ const BUILTIN: &[(&str, &str)] = &[
         include_str!("../plugins/service-escalation.yaml"),
     ),
     (
+        "writable-privileged-code",
+        include_str!("../plugins/writable-privileged-code.yaml"),
+    ),
+    (
         "activex-exploitability",
         include_str!("../plugins/activex-exploitability.yaml"),
     ),
@@ -265,6 +269,56 @@ mod tests {
             )
             .unwrap();
         store
+    }
+
+    /// A comparison with three different kinds, each recording "who can overwrite the
+    /// binary" under its own field name, plus one clean row.
+    fn cross_kind_fixture() -> Store {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        std::mem::forget(dir);
+        store
+            .conn()
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 INSERT INTO comparisons (id, base, compare, rules_hash, created, total, complete)
+                     VALUES (1, 1, 2, 'h', '2026-01-01T00:00:00Z', 3, 1);
+                 INSERT INTO blobs (id, hash, data) VALUES
+                     (20, X'14', '{\"server_writable_by\":[\"Users\"]}'),
+                     (21, X'15', '{\"process_writable_by\":[\"Everyone\"]}'),
+                     (22, X'16', '{\"binary_writable_by\":[]}');
+                 INSERT INTO results (comparison, id, kind, identity, change, severity, base_blob, compare_blob, diffs)
+                     VALUES (1, 1, 'com',  'clsid\\a', 'added', 2, NULL, 20, '[]'),
+                            (1, 2, 'port', '0.0.0.0:8080', 'added', 2, NULL, 21, '[]'),
+                            (1, 3, 'task', 'task\\clean', 'added', 2, NULL, 22, '[]');",
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn cross_kind_writable_privileged_code() {
+        let store = cross_kind_fixture();
+        ensure_analysis(&store, 1, &builtins().unwrap()).unwrap();
+        let flagged: Vec<i64> = store
+            .conn()
+            .prepare(
+                "SELECT result FROM findings
+                 WHERE comparison = 1 AND rule = 'privileged-binary-writable-by-standard-user'
+                 ORDER BY result",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        // The COM server (server_writable_by) and the port (process_writable_by) are both
+        // flagged by one analyzer despite the different field names; the clean task is not.
+        assert_eq!(
+            flagged,
+            vec![1, 2],
+            "expected com+port flagged, got {flagged:?}"
+        );
     }
 
     #[test]
