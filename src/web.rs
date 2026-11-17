@@ -280,7 +280,7 @@ fn open(app: &App) -> Result<Store, ApiError> {
 fn info(app: &App) -> Result<Value, ApiError> {
     Ok(json!({
         "db": app.db.display().to_string(),
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::VERSION,
         "rules": app.rules.rules.len(),
         "captures": crate::procmon::captures(&open(app)?)?,
     }))
@@ -1248,5 +1248,75 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v))
         .collect();
         assert!(tree(&app, &p).is_err(), "prefix without trailing backslash");
+    }
+
+    #[test]
+    fn analysis_endpoint_runs_analyzers_and_reports_modules() {
+        use crate::model::{Kind, Record};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        let mut store = Store::open(&db).unwrap();
+        let snap = |store: &mut Store, id: &str, recs: Vec<Record>| {
+            store.begin_run(id).unwrap();
+            store.ingest(id, recs).unwrap();
+            store
+                .finish_run(id, &["services".into()], &Default::default(), 0)
+                .unwrap();
+        };
+        snap(&mut store, "a", vec![]);
+        snap(
+            &mut store,
+            "b",
+            vec![Record {
+                kind: Kind::Service,
+                identity: r"svc\weak".into(),
+                data: json!({ "account": "LocalSystem", "reconfigurable_by": ["Users"], "startable_by": [], "binary_writable_by": [] }),
+            }],
+        );
+        let (rules, hash) = RuleSet::load_hashed(None).unwrap();
+        let c = store.comparison("a", "b", &rules, &hash, None).unwrap();
+        let app = App {
+            db,
+            rules,
+            rules_hash: hash,
+            hosts: vec![],
+            computing: Mutex::new(()),
+            attributing: Mutex::new(()),
+            analyzing: Mutex::new(()),
+            analyzers: crate::analyzers::builtins().unwrap(),
+            job: Mutex::new(None),
+        };
+        let p: HashMap<String, String> =
+            [("c".to_string(), c.id.to_string())].into_iter().collect();
+        let v = analysis_status(&app, &p)
+            .map_err(|_| "analysis failed")
+            .unwrap();
+
+        assert!(
+            v["available"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["name"] == "service-escalation"),
+            "service-escalation should be listed as available"
+        );
+        let modules = v["modules"].as_array().unwrap();
+        assert!(
+            modules
+                .iter()
+                .any(|m| m["module"] == "service-escalation" && m["state"] == "done"),
+            "service-escalation should have run: {modules:?}"
+        );
+        // Running the analyzer added a finding over the materialized comparison.
+        let n: i64 = Store::open(&app.db)
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM findings WHERE rule = 'service-reconfigurable-by-standard-user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(n >= 1, "analyzer finding should be recorded");
     }
 }

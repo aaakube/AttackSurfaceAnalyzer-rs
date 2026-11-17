@@ -22,8 +22,12 @@ use store::Store;
 
 /// asa, attack surface analysis for Windows: snapshot a system before and after a change
 /// (installing software, applying config) and report what it did to the attack surface.
+/// Package version plus the git commit it was built from (see build.rs).
+pub(crate) const VERSION: &str =
+    concat!(env!("CARGO_PKG_VERSION"), " (", env!("ASA_GIT_COMMIT"), ")");
+
 #[derive(Parser)]
-#[command(version, about)]
+#[command(version = VERSION, about)]
 struct Cli {
     /// SQLite database holding all runs.
     #[arg(long, global = true, env = "ASA_DB", default_value = "asa.db")]
@@ -296,6 +300,17 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+/// Best-effort text of a caught panic payload.
+fn panic_msg(e: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = e.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = e.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
     if !cfg!(windows) {
         eprintln!(
@@ -450,7 +465,16 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
                         let sink = &sink;
                         s2.spawn(move || {
                             let t = Instant::now();
-                            let r = c.collect(sink);
+                            // Contain a panic in one collector so the others still
+                            // finish and the run is recorded (as a failure for this
+                            // collector). The coverage notices already tell the reader
+                            // a collector did not run.
+                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                c.collect(sink)
+                            }))
+                            .unwrap_or_else(|e| {
+                                Err(anyhow::anyhow!("collector panicked: {}", panic_msg(&e)))
+                            });
                             (c.name(), r, t.elapsed().as_secs_f64())
                         })
                     })
