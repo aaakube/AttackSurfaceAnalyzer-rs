@@ -902,6 +902,14 @@ fn summary(kind: &str, d: &Value) -> String {
             flag("plaintext_exportable", "exportable in plain text"),
             s("readable_by").map(|r| format!("READABLE BY {r}")),
         ],
+        "handler" => vec![
+            s("scheme").map(|sc| format!("{sc}:")),
+            s("name").filter(|n| !n.starts_with('@')),
+            s("binary").or_else(|| s("delegate_execute").map(|c| format!("COM {c}"))),
+            s("binary_signature.status").map(|st| format!("binary {st}")),
+            writable("binary_writable_by"),
+            writable("writable_by").map(|w| format!("key {w}")),
+        ],
         "right" => vec![
             s("description"),
             flag("sensitive", "sensitive"),

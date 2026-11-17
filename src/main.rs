@@ -73,7 +73,7 @@ struct CollectArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights,security,wmi,tpm,keys"
+        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights,security,wmi,tpm,keys,handlers"
     )]
     collectors: Vec<CollectorName>,
     /// Directories the file collector walks (repeatable). Defaults to the system drive.
@@ -128,6 +128,7 @@ enum CollectorName {
     Wmi,
     Tpm,
     Keys,
+    Handlers,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -256,6 +257,7 @@ pub(crate) fn kinds_of(collector: &str) -> &'static [Kind] {
         "wmi" => &[Kind::Wmi],
         "tpm" => &[Kind::Tpm],
         "keys" => &[Kind::Key],
+        "handlers" => &[Kind::Handler],
         _ => &[],
     }
 }
@@ -397,6 +399,14 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
             })),
             #[cfg(windows)]
             CollectorName::Keys => selected.push(Box::new(collectors::keys::KeysCollector)),
+            #[cfg(windows)]
+            CollectorName::Handlers => {
+                selected.push(Box::new(collectors::handlers::HandlersCollector {
+                    reg: collectors::registry::WinRegistry,
+                    signatures,
+                    threads,
+                }))
+            }
             // Reads profile files, so it runs anywhere (useful against a mounted image).
             CollectorName::Wifi => selected.push(Box::new(collectors::wifi::WifiCollector {
                 root: collectors::wifi::default_root(),

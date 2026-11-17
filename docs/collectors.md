@@ -1,7 +1,7 @@
 # What is collected
 
 `asa collect` runs every collector by default: `files, services, firewall, com, registry,
-users, certificates, ports, wifi, tasks, defender, rights, security, wmi, tpm, keys`.
+users, certificates, ports, wifi, tasks, defender, rights, security, wmi, tpm, keys, handlers`.
 `--collectors files,services,...` picks some.
 
 Collectors read files, the registry and Win32 APIs directly. There is no PowerShell, and WMI
@@ -31,6 +31,7 @@ not attack surface. Secrets are never read: no private keys, Wi-Fi keys or passw
 - **security:** UAC, WDigest, LSA protection, NTLM, SMBv1 and signing, RDP
 - **WMI:** permanent event subscriptions (a classic persistence technique)
 - **TPM and keys:** TPM state, Secure Boot, machine keys readable by non-admins
+- **handlers:** URL protocol handlers (`scheme:` links) — one-click launch paths and hijack targets
 
 ## Fields
 
@@ -52,6 +53,7 @@ not attack surface. Secrets are never read: no private keys, Wi-Fi keys or passw
 | `wmi` | `wmi\<namespace>\filter\<name>`, `...\consumer\<class>\<name>`, `...\binding\<filter> -> <consumer>` | Permanent event subscriptions in `root\subscription` and `root\default`: filters (`query`, `query_language`, `event_namespace`), consumers (`class`, `command_line`, `executable`, `script_engine`, `script_text`, `script_file`, `target`, `binary`, `binary_signature.*`, `binary_writable_by`) and bindings. |
 | `tpm` | `tpm` | `present`, `enabled`, `activated`, `owned`, `manufacturer`, `manufacturer_version`, `spec_version`, `secure_boot` |
 | `key` | `key\machine\<provider>\<container>` | Machine keys of the software and TPM key storage providers: `provider`, `name`, `algorithm`, `length`, `legacy`, `exportable`, `plaintext_exportable`, `file`, `readable_by` (who besides administrators can copy the key file). Key material is never read. |
+| `handler` | `handler\<scheme>`, `handler\wow64\<scheme>`, `user\<sid>\handler\<scheme>` | URL protocol handlers (a `SOFTWARE\Classes` key with a `URL Protocol` value, so a `scheme:` link launches a program): `scheme`, `store` (machine / wow64 / user), `name`, `command`, `binary`, `delegate_execute` (a COM CLSID launched instead of a command line), `binary_missing`, `binary_signature.*`, `binary_writable_by`, `writable_by` (who can rewrite the key and hijack the scheme). |
 | `wifi` | `wifi\<adapter>\<profile>` | `ssid`, `connection_mode`, `hidden_network`, `authentication`, `encryption`, `uses_802_1x`, `key_type`, `key_protected` |
 
 ### Files

@@ -5,6 +5,7 @@ pub mod com;
 pub mod defender;
 pub mod files;
 pub mod firewall;
+pub mod handlers;
 pub mod keys;
 pub mod pe;
 pub mod ports;
@@ -85,6 +86,7 @@ pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, &'static 
         (Kind::Wmi, wmi::FIELDS),
         (Kind::Tpm, tpm::FIELDS),
         (Kind::Key, keys::FIELDS),
+        (Kind::Handler, handlers::FIELDS),
     ])
 }
 

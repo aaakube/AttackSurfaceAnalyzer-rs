@@ -272,6 +272,26 @@ pub fn sources(kind: Kind, identity: &str) -> Vec<(String, usize)> {
                 out.push((key.to_string(), 2));
             }
         }
+        Kind::Handler => {
+            // handler\<scheme>, handler\wow64\<scheme>, or user\<sid>\handler\<scheme>.
+            let key = if let Some(rest) = identity.strip_prefix(r"user\") {
+                rest.split_once(r"\handler\")
+                    .map(|(sid, scheme)| format!(r"HKU\{sid}_Classes\{scheme}"))
+            } else if let Some(scheme) = identity.strip_prefix(r"handler\wow64\") {
+                Some(format!(r"HKLM\SOFTWARE\WOW6432Node\Classes\{scheme}"))
+            } else {
+                identity
+                    .strip_prefix(r"handler\")
+                    .map(|scheme| format!(r"HKLM\SOFTWARE\Classes\{scheme}"))
+            };
+            if let Some(key) = key {
+                if let Some(user) = hkcu_view(&key) {
+                    out.push((user, 2));
+                }
+                // The key itself and its shell\open\command subkey.
+                out.push((key, 2));
+            }
+        }
         Kind::Key => {
             // key\machine\software\<name>: the provider writes a file named by a hash,
             // which only the collected object knows; nothing to match by identity.
@@ -748,6 +768,17 @@ mod tests {
             vec![
                 (r"HKU\S-1-5-21-1\Software\Run".into(), 1),
                 (r"HKCU\Software\Run".into(), 1)
+            ]
+        );
+        assert_eq!(
+            s(Kind::Handler, r"handler\vnd.libreoffice.command"),
+            vec![(r"HKLM\SOFTWARE\Classes\vnd.libreoffice.command".into(), 2)]
+        );
+        assert_eq!(
+            s(Kind::Handler, r"user\S-1-5-21-1\handler\myscheme"),
+            vec![
+                (r"HKCU\Software\Classes\myscheme".into(), 2),
+                (r"HKU\S-1-5-21-1_Classes\myscheme".into(), 2)
             ]
         );
         assert!(s(Kind::User, r"user\bob").is_empty());
