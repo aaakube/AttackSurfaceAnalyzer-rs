@@ -1,4 +1,7 @@
-# Built-in rules for Windows. Override with `asa diff --rules my-rules.yaml`.
+# Built-in rules for Windows. Rules whose fields Linux objects share (writable
+# binaries, listeners on all interfaces, privileged groups, ...) also apply to
+# Linux runs; Windows-only conventions are marked `platforms: [windows]`.
+# Override with `asa diff --rules my-rules.yaml`.
 # Validate a rules file with `asa rules check <file>`.
 #
 # Conditions: all / any / not, or { field: <path>, <op>: <value> } with
@@ -358,7 +361,7 @@ rules:
     severity: warning
     kinds: [service]
     changes: [created]
-    when: { field: start, in: [auto, boot, system] }
+    when: { field: start, in: [auto, boot, system, enabled] }
 
   - name: New service running as SYSTEM
     severity: warning
@@ -389,7 +392,7 @@ rules:
     when:
       all:
         - { field: start, changed: true }
-        - { field: start, in: [auto, boot, system] }
+        - { field: start, in: [auto, boot, system, enabled] }
 
   - name: Service failure command set
     description: The command runs whenever the service crashes, a known persistence spot.
@@ -406,7 +409,7 @@ rules:
     when:
       all:
         - { field: binary_missing, eq: true }
-        - { field: start, in: [auto, boot, system] }
+        - { field: start, in: [auto, boot, system, enabled] }
 
   # ---------------------------------------------------------------- drivers
   - name: New driver
@@ -872,6 +875,7 @@ rules:
   - name: Unsigned listening program
     severity: error
     kinds: [port]
+    platforms: [windows]
     changes: [created, modified]
     when: { field: process_signature.status, ne: valid }
 
@@ -1356,6 +1360,7 @@ rules:
     description: Trusted program files are normally owned by SYSTEM, Administrators or TrustedInstaller; other owners can also usually modify the file.
     severity: warning
     kinds: [file]
+    platforms: [windows]
     changes: [created, modified]
     when:
       all:
@@ -1379,6 +1384,7 @@ rules:
     description: Most services run as a well-known account; a custom account is worth confirming.
     severity: warning
     kinds: [service]
+    platforms: [windows]
     changes: [created, modified]
     when:
       all:

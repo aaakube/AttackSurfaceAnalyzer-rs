@@ -748,7 +748,18 @@ fn summary(kind: &str, d: &Value) -> String {
             d.get("size").and_then(Value::as_u64).map(human_size),
             s("format"),
             s("signature.status"),
+            flag("setuid", "SETUID"),
+            flag("setgid", "setgid"),
             writable("writable_by"),
+        ],
+        // Linux systemd units (Windows services have no unit_path).
+        "service" if d.get("unit_path").is_some() => vec![
+            s("display_name"),
+            s("start"),
+            s("account").map(|a| format!("as {a}")),
+            flag("binary_missing", "BINARY MISSING"),
+            writable("binary_writable_by").map(|w| format!("binary {w}")),
+            writable("unit_writable_by").map(|w| format!("unit {w}")),
         ],
         "service" | "driver" => vec![
             s("display_name").filter(|n| !n.starts_with('@')),
@@ -789,6 +800,25 @@ fn summary(kind: &str, d: &Value) -> String {
             s("local_service").map(|x| format!("service {x}")),
             flag("shadows_machine", "SHADOWS MACHINE CLASS"),
             writable("server_writable_by"),
+        ],
+        // Linux accounts (Windows accounts have no uid).
+        "user" if d.get("uid").is_some() => vec![
+            (d.get("uid").and_then(Value::as_u64) == Some(0)
+                && s("name").as_deref() != Some("root"))
+            .then(|| "UID 0".to_string()),
+            flag("administrator", "ADMINISTRATOR"),
+            s("privileged_groups").filter(|_| d.get("administrator") != Some(&Value::Bool(true))),
+            s("password").map(|p| match p.as_str() {
+                "empty" => "EMPTY PASSWORD".to_string(),
+                "set" => "password set".to_string(),
+                other => other.to_string(),
+            }),
+            s("password_hash")
+                .filter(|h| matches!(h.as_str(), "des" | "bsdi-des" | "md5"))
+                .map(|h| format!("weak hash ({h})")),
+            flag("hash_in_passwd", "HASH IN /etc/passwd"),
+            flag("duplicate_uid", "duplicate uid"),
+            (d.get("login_shell") == Some(&Value::Bool(false))).then(|| "no login shell".into()),
         ],
         "user" => vec![
             Some(if d.get("enabled") == Some(&Value::Bool(true)) {

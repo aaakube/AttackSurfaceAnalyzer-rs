@@ -7,6 +7,7 @@ pub mod files;
 pub mod firewall;
 pub mod handlers;
 pub mod keys;
+pub mod linux;
 pub mod pe;
 pub mod ports;
 pub mod registry;
@@ -15,6 +16,7 @@ pub mod security;
 pub mod services;
 pub mod tasks;
 pub mod tpm;
+pub mod unix;
 pub mod wifi;
 pub mod win;
 pub mod wmi;
@@ -64,10 +66,12 @@ pub trait Collector: Sync {
     fn collect(&self, sink: &Sink) -> Result<()>;
 }
 
-/// Top-level fields of each kind's objects, used to lint rules for typos.
-pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, &'static [&'static str]> {
+/// Top-level fields of each kind's objects, used to lint rules for typos. A kind
+/// collected on several platforms (users, services, ports) has the union of the
+/// fields of each platform's objects.
+pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, Vec<&'static str>> {
     use crate::model::Kind;
-    std::collections::HashMap::from([
+    let mut out: std::collections::HashMap<Kind, Vec<&'static str>> = [
         (Kind::File, files::FIELDS),
         (Kind::Service, services::FIELDS),
         (Kind::Driver, services::FIELDS),
@@ -87,7 +91,23 @@ pub fn known_fields() -> std::collections::HashMap<crate::model::Kind, &'static 
         (Kind::Tpm, tpm::FIELDS),
         (Kind::Key, keys::FIELDS),
         (Kind::Handler, handlers::FIELDS),
-    ])
+    ]
+    .into_iter()
+    .map(|(k, f)| (k, f.to_vec()))
+    .collect();
+    for (kind, fields) in [
+        (Kind::User, linux::accounts::USER_FIELDS),
+        (Kind::Group, linux::accounts::GROUP_FIELDS),
+        (Kind::Service, linux::systemd::FIELDS),
+    ] {
+        let all = out.entry(kind).or_default();
+        for f in fields {
+            if !all.contains(f) {
+                all.push(f);
+            }
+        }
+    }
+    out
 }
 
 /// Asserts a fully-populated object serializes to exactly the advertised fields.

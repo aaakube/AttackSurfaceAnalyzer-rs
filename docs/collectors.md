@@ -81,3 +81,28 @@ entries, and the top-level vendor keys of `HKLM\SOFTWARE`.
 Add your own with `--registry-key KEY[:DEPTH]` (repeatable). For example
 `--registry-key HKLM\SOFTWARE\Vendor:2` walks that key and two levels of subkeys, and
 `HKCU\...` means every loaded user hive. `--no-default-registry` collects only your keys.
+
+## Linux
+
+On Linux, `asa collect` runs `files,users,services,ports` by default. These collectors read
+files (`/etc`, unit files, `/proc`) rather than calling tools such as `systemctl` or `ss`.
+Run as root: without it `/etc/shadow` and other users' `/proc/<pid>/fd` cannot be read, so
+password state shows as `unknown` and some sockets have no owning program. `tasks` and `wifi`
+read Windows files and only make sense against a mounted Windows image, so you have to name
+them explicitly.
+
+Signatures are not verified on Linux. `writable_by` (files, service and listening binaries,
+unit files) lists the non-root principals that the **mode bits** let write: the owning user,
+the owning group as `%group`, and `everyone`. POSIX ACLs are not read.
+
+| Collector | Kind | Fields |
+|---|---|---|
+| `files` | file | Same as Windows, plus `owner`, `group`, `mode` (octal), `setuid`, `setgid`, `sticky`, `world_writable`. Executables and shared libraries are sniffed: `format` is `elf`, or `script` for an executable file with a `#!` line. Default root is `/`. `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp` and `/var/cache` are excluded by default. |
+| `users` | user | `name`, `uid`, `gid`, `primary_group`, `comment`, `home`, `shell`, `login_shell`, `password` (set / empty / locked / unknown), `password_hash` (algorithm only, e.g. `yescrypt`, `md5`, `des`), `hash_in_passwd`, `system` (uid below `UID_MIN`), `groups`, `administrator` (uid 0 or in sudo/wheel/admin), `privileged_groups`, `duplicate_uid`. Hashes are never stored. |
+| `users` | group | `name`, `gid`, `members` (supplementary members plus users whose primary group it is), `privileged`, `privilege` (root, sudo, wheel, admin, docker, lxd, disk, shadow, libvirt). |
+| `services` | service | systemd units from `/etc`, `/usr/local/lib`, `/usr/lib` and `/lib` `systemd/system`, highest precedence first. Fields: `name`, `display_name`, `type`, `start` (enabled / disabled / static / masked / template), `account` (`User=`, `dynamic`, else root), `image_path`, `binary`, `binary_missing`, `binary_writable_by`, `unit_path`, `drop_ins`, `unit_writable_by`, `commands` (every `Exec*=`), `hardening` (NoNewPrivileges, ProtectSystem, capability sets, ...). Drop-ins are merged. Enabled template instances such as `getty@tty1.service` get their own record. Aliases are skipped. `/run` (transient units) is not read. |
+| `ports` | port | Same fields as Windows. Listening TCP and unconnected UDP sockets from `/proc/net`, attributed through `/proc/<pid>/fd` and `/proc/<pid>/cgroup` (system services only). Sockets in `ip_local_port_range` are grouped per program. |
+
+The built-in rules are written for Windows. Rules that depend only on fields both platforms
+share (writable binaries, listeners on all interfaces, privileged group changes, enabled
+services) also apply to Linux runs. Windows-only conventions are marked `platforms: [windows]`.

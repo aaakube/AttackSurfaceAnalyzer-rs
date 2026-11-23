@@ -296,7 +296,7 @@ impl Collector for TasksCollector {
             binaries::describe(paths, self.threads, self.signatures);
         for mut t in tasks {
             if let Some(b) = &t.binary {
-                let i = info.get(&b.to_lowercase()).cloned().unwrap_or_default();
+                let i = info.get(&binaries::key(b)).cloned().unwrap_or_default();
                 t.binary_missing = !i.exists;
                 t.binary_signature = i.signature;
                 t.binary_writable_by = i.writable_by;

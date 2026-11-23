@@ -233,7 +233,7 @@ impl Collector for WmiCollector {
             binaries::describe(paths, self.threads, self.signatures);
         for (id, mut o) in all {
             if let Some(b) = &o.binary {
-                let i = info.get(&b.to_lowercase()).cloned().unwrap_or_default();
+                let i = info.get(&binaries::key(b)).cloned().unwrap_or_default();
                 o.binary_missing = !i.exists;
                 o.binary_signature = i.signature;
                 o.binary_writable_by = i.writable_by;

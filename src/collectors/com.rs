@@ -207,7 +207,7 @@ impl<R: Registry> Collector for ComCollector<R> {
             binaries::describe(paths, self.threads, self.signatures);
         for (identity, mut obj) in found {
             if let Some(s) = &obj.server {
-                let i = info.get(&s.to_lowercase()).cloned().unwrap_or_default();
+                let i = info.get(&binaries::key(s)).cloned().unwrap_or_default();
                 obj.server_missing = !i.exists;
                 obj.server_signature = i.signature;
                 obj.server_writable_by = i.writable_by;

@@ -127,7 +127,7 @@ impl<R: Registry> Collector for HandlersCollector<R> {
             binaries::describe(paths, self.threads, self.signatures);
         for (identity, mut obj) in found {
             if let Some(b) = &obj.binary {
-                let i = info.get(&b.to_lowercase()).cloned().unwrap_or_default();
+                let i = info.get(&binaries::key(b)).cloned().unwrap_or_default();
                 obj.binary_missing = !i.exists;
                 obj.binary_signature = i.signature;
                 obj.binary_writable_by = i.writable_by;

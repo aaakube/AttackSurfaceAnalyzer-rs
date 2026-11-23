@@ -18,8 +18,22 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 
-/// Start of the default Windows dynamic (ephemeral) port range.
-pub const DYNAMIC_START: u16 = 49152;
+/// How a platform's sockets are grouped and named.
+pub struct Convention {
+    /// The ephemeral port range: sockets in it are grouped per program.
+    pub dynamic: std::ops::RangeInclusive<u16>,
+    /// pid 0 is "Idle" and 4 is "System" (Windows); elsewhere pid 0 means the
+    /// owner could not be determined.
+    pub windows_pids: bool,
+}
+
+impl Convention {
+    /// The default Windows dynamic port range (49152-65535).
+    pub const WINDOWS: Convention = Convention {
+        dynamic: 49152..=65535,
+        windows_pids: true,
+    };
+}
 
 pub struct Socket {
     pub protocol: &'static str,
@@ -92,14 +106,14 @@ fn wider(a: &'static str, b: &'static str) -> &'static str {
     if rank(b) > rank(a) { b } else { a }
 }
 
-fn process_name(pid: u32, owner: &Owner) -> String {
+fn process_name(pid: u32, owner: &Owner, windows_pids: bool) -> String {
     match pid {
-        0 => "Idle".into(),
-        4 => "System".into(),
+        0 if windows_pids => "Idle".into(),
+        4 if windows_pids => "System".into(),
         _ => owner
             .image
             .as_deref()
-            .and_then(|p| p.rsplit('\\').next())
+            .and_then(|p| p.rsplit(['\\', '/']).next())
             .map(String::from)
             .unwrap_or_else(|| "unknown".into()),
     }
@@ -110,15 +124,16 @@ fn process_name(pid: u32, owner: &Owner) -> String {
 pub fn records(
     sockets: Vec<Socket>,
     owners: &HashMap<u32, Owner>,
+    conv: &Convention,
     describe: impl Fn(&BTreeSet<String>) -> HashMap<String, binaries::BinaryInfo>,
 ) -> Vec<Record> {
     let mut objs: BTreeMap<String, PortObject> = BTreeMap::new();
     for s in sockets {
         let owner = owners.get(&s.pid).cloned().unwrap_or_default();
-        let name = process_name(s.pid, &owner);
+        let name = process_name(s.pid, &owner, conv.windows_pids);
         let mut services = owner.services.clone();
         services.sort();
-        let dynamic = s.port >= DYNAMIC_START;
+        let dynamic = conv.dynamic.contains(&s.port);
         let identity = if dynamic {
             // Per hosting unit: the services if any (svchost hosts many), else the program.
             let who = if services.is_empty() {
@@ -157,7 +172,7 @@ pub fn records(
     let info = describe(&images);
     objs.into_iter()
         .map(|(id, mut o)| {
-            if let Some(i) = o.process.as_ref().and_then(|p| info.get(&p.to_lowercase())) {
+            if let Some(i) = o.process.as_ref().and_then(|p| info.get(&binaries::key(p))) {
                 o.process_signature = i.signature.clone();
                 o.process_writable_by = i.writable_by.clone();
             }
@@ -189,7 +204,7 @@ impl Collector for PortsCollector {
                 });
             }
             let (signatures, threads) = (self.signatures, self.threads);
-            for r in records(sockets, &owners, |paths| {
+            for r in records(sockets, &owners, &Convention::WINDOWS, |paths| {
                 binaries::describe(paths.clone(), threads, signatures)
             }) {
                 sink.emit(r);
@@ -442,10 +457,11 @@ mod tests {
             sock("tcp", "0.0.0.0", 445, 4),
             sock("tcp", "127.0.0.1", 8080, 800),
         ];
-        let r: HashMap<String, serde_json::Value> = records(socks, &owners, |_| HashMap::new())
-            .into_iter()
-            .map(|r| (r.identity, r.data))
-            .collect();
+        let r: HashMap<String, serde_json::Value> =
+            records(socks, &owners, &Convention::WINDOWS, |_| HashMap::new())
+                .into_iter()
+                .map(|r| (r.identity, r.data))
+                .collect();
         assert_eq!(r.len(), 6, "{:?}", r.keys().collect::<Vec<_>>());
         assert_eq!(
             r[r"tcp\0.0.0.0:135"]["services"],

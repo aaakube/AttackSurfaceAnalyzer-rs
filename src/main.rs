@@ -83,12 +83,9 @@ struct CollectArgs {
     /// Identifier for this run. Defaults to a timestamp.
     #[arg(long)]
     run_id: Option<String>,
-    /// Collectors to run (comma-separated).
-    #[arg(
-        long,
-        value_delimiter = ',',
-        default_value = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights,security,wmi,tpm,keys,handlers"
-    )]
+    /// Collectors to run (comma-separated). The default is every collector this
+    /// platform supports.
+    #[arg(long, value_delimiter = ',', default_value = DEFAULT_COLLECTORS)]
     collectors: Vec<CollectorName>,
     /// Directories the file collector walks (repeatable). Defaults to the system drive.
     #[arg(long = "path", value_name = "DIR")]
@@ -246,6 +243,13 @@ enum RulesCommand {
     Default,
 }
 
+#[cfg(windows)]
+const DEFAULT_COLLECTORS: &str = "files,services,firewall,com,registry,users,certificates,ports,wifi,tasks,defender,rights,security,wmi,tpm,keys,handlers";
+// tasks and wifi also run here, but read Windows files: name them to inspect a
+// mounted Windows image.
+#[cfg(not(windows))]
+const DEFAULT_COLLECTORS: &str = "files,users,services,ports";
+
 fn default_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -316,6 +320,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
     }
 }
 
+/// Whether we run as root: `/proc/self` is owned by the effective uid.
+#[cfg(target_os = "linux")]
+fn is_root() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").is_ok_and(|m| m.uid() == 0)
+}
+
 /// Best-effort text of a caught panic payload.
 fn panic_msg(e: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = e.downcast_ref::<&str>() {
@@ -328,10 +339,16 @@ fn panic_msg(e: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
-    if !cfg!(windows) {
+    if !cfg!(windows) && !args.no_signatures {
         eprintln!(
-            "warning: asa targets Windows; on {} owners, ACLs and signatures are not collected",
+            "note: signatures are not verified on {}",
             std::env::consts::OS
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if !is_root() {
+        eprintln!(
+            "note: not running as root: password state, other users' sockets and some files are unreadable"
         );
     }
     let mut exclude = args.exclude.clone();
@@ -447,13 +464,33 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
             CollectorName::Wifi => selected.push(Box::new(collectors::wifi::WifiCollector {
                 root: collectors::wifi::default_root(),
             })),
+            #[cfg(target_os = "linux")]
+            CollectorName::Users => {
+                selected.push(Box::new(collectors::linux::accounts::AccountsCollector {
+                    root: "/".into(),
+                }))
+            }
+            #[cfg(target_os = "linux")]
+            CollectorName::Services => {
+                selected.push(Box::new(collectors::linux::systemd::SystemdCollector {
+                    root: "/".into(),
+                }))
+            }
+            #[cfg(target_os = "linux")]
+            CollectorName::Ports => {
+                selected.push(Box::new(collectors::linux::ports::PortsCollector {
+                    root: "/".into(),
+                    threads,
+                }))
+            }
             #[cfg(not(windows))]
             other => eprintln!(
-                "skipping the {} collector: it reads the Windows registry",
+                "skipping the {} collector: not available on {}",
                 other
                     .to_possible_value()
                     .map(|v| v.get_name().to_string())
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                std::env::consts::OS
             ),
         }
     }
@@ -797,16 +834,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collect_runs_every_collector_by_default() {
+    fn collect_runs_every_platform_collector_by_default() {
         let cli = Cli::try_parse_from(["asa", "collect"]).unwrap();
         let Command::Collect(args) = cli.command else {
             panic!("expected collect")
         };
-        assert_eq!(
-            args.collectors.len(),
-            CollectorName::value_variants().len(),
-            "the --collectors default must list every collector"
-        );
+        if cfg!(windows) {
+            assert_eq!(
+                args.collectors.len(),
+                CollectorName::value_variants().len(),
+                "the --collectors default must list every collector"
+            );
+        } else {
+            assert!(
+                [
+                    CollectorName::Files,
+                    CollectorName::Users,
+                    CollectorName::Services,
+                    CollectorName::Ports
+                ]
+                .iter()
+                .all(|c| args.collectors.contains(c))
+            );
+        }
         for c in CollectorName::value_variants() {
             let name = c.to_possible_value().unwrap().get_name().to_string();
             assert!(

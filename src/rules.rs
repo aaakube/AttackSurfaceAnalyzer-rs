@@ -179,7 +179,7 @@ impl RuleSet {
 
     /// Static checks beyond parsing: unknown field names and suspicious regexes.
     /// `known_fields` maps each kind to the top-level fields its objects have.
-    pub fn lint(&self, known_fields: &HashMap<Kind, &[&str]>) -> Vec<String> {
+    pub fn lint(&self, known_fields: &HashMap<Kind, Vec<&str>>) -> Vec<String> {
         let mut warnings = Vec::new();
         for rule in &self.rules {
             let Some(cond) = &rule.when else { continue };
@@ -550,7 +550,7 @@ rules:
             "rules:\n  - name: r\n    kinds: [file]\n    when:\n      any:\n        - { field: PATH, eq: x }\n        - { field: path, regex: '/bash^' }\n",
         )
         .unwrap();
-        let known: HashMap<Kind, &[&str]> = HashMap::from([(Kind::File, &["path"][..])]);
+        let known: HashMap<Kind, Vec<&str>> = HashMap::from([(Kind::File, vec!["path"])]);
         let w = rs.lint(&known);
         assert_eq!(w.len(), 2, "{w:?}");
     }

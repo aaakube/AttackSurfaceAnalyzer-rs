@@ -82,8 +82,18 @@ pub struct BinaryInfo {
     pub writable_by: Vec<String>,
 }
 
+/// The map key `describe` uses for a path: lowercased on Windows, where paths are
+/// case-insensitive, as-is elsewhere.
+pub fn key(path: &str) -> String {
+    if cfg!(windows) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Describes each unique path once, spread over `threads` workers. Keys are
-/// lowercased paths.
+/// paths as given by `key`.
 pub fn describe(
     paths: BTreeSet<String>,
     threads: usize,
@@ -100,7 +110,7 @@ pub fn describe(
             .map(|part| {
                 s.spawn(move || {
                     part.iter()
-                        .map(|p| (p.to_lowercase(), describe_one(p, signatures)))
+                        .map(|p| (key(p), describe_one(p, signatures)))
                         .collect::<Vec<_>>()
                 })
             })
@@ -127,10 +137,13 @@ fn describe_one(path: &str, signatures: bool) -> BinaryInfo {
     }
     #[cfg(not(windows))]
     {
+        // Signatures are an Authenticode concept; Unix gets permissions only.
         let _ = signatures;
         BinaryInfo {
             exists: true,
-            ..Default::default()
+            signature: None,
+            writable_by: super::unix::path_writable_by(p, super::unix::system_ids())
+                .unwrap_or_default(),
         }
     }
 }

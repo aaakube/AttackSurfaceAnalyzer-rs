@@ -33,6 +33,19 @@ jobs:
     - name: Rules lint
       run: cargo run --quiet --locked -- rules check
 
+  test-linux:
+    name: Clippy and unit tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Toolchain
+      run: rustup toolchain install stable --profile minimal -c clippy
+    - uses: Swatinem/rust-cache@v2
+    - name: Clippy (Linux target)
+      run: cargo clippy --all-targets --locked -- -D warnings
+    - name: Test
+      run: cargo test --locked
+
   test-windows:
     name: Unit tests (Windows)
     runs-on: windows-latest
@@ -44,7 +57,7 @@ jobs:
 
   package:
     name: Release bundle
-    needs: [lint, test-windows]
+    needs: [lint, test-linux, test-windows]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
