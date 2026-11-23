@@ -9,6 +9,11 @@ A rewrite in Rust inspired by Microsoft's
 > asa is an independent project. It is not affiliated with, endorsed by or supported by
 > Microsoft.
 
+![asa reviewing a Google Chrome Enterprise install: baseline snapshot, install, second snapshot, terminal summary, then the web UI filtered to the three SYSTEM services Chrome added](docs/demo.gif)
+
+*Reviewing a Google Chrome Enterprise install on a Windows 11 VM: snapshot, install,
+snapshot, summary in the terminal, then the web UI. Long collection waits are cut.*
+
 - **One file, no install.** `asa.exe` needs no runtime and never uses the network.
 - **Covers what attackers use:** files, services, drivers, firewall, COM, registry persistence,
   users, rights, certificates, ports, scheduled tasks, Defender, WMI, security options, keys,
