@@ -76,7 +76,10 @@ jobs:
       run: |
         f=$(ls dist/asa-*-linux-x64/asa)
         file "$f"
-        file "$f" | grep -q "statically linked"
+        # Static and static-pie binaries have no program interpreter (dynamic loader).
+        if readelf -l "$f" | grep -q "program interpreter"; then
+          echo "::error::$f is dynamically linked"; exit 1
+        fi
         "$f" --version
     - uses: actions/upload-artifact@v4
       with:
