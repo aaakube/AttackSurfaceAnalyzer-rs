@@ -179,6 +179,30 @@ pub struct ComparisonInfo {
     pub notices: Vec<Notice>,
 }
 
+/// The Unix counterpart of `win::protect_database`: a new database and its WAL
+/// sidecars become owner-only (0600; SQLite gives later sidecars the database's own
+/// mode), and an existing database that other users can access gets a warning.
+#[cfg(unix)]
+fn protect_database_unix(path: &Path, fresh: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    if fresh {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut p = path.as_os_str().to_owned();
+            p.push(suffix);
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        }
+    } else if let Ok(md) = std::fs::metadata(path)
+        && md.permissions().mode() & 0o077 != 0
+    {
+        eprintln!(
+            "warning: {} is accessible to other users (mode {:04o}); it maps this machine's weaknesses. Consider: chmod 600 {}",
+            path.display(),
+            md.permissions().mode() & 0o7777,
+            path.display()
+        );
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         // Whether we are creating the file, so we can lock it down on first creation.
@@ -373,7 +397,9 @@ impl Store {
         // database is more open than that.
         #[cfg(windows)]
         crate::collectors::win::protect_database(path, fresh);
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        protect_database_unix(path, fresh);
+        #[cfg(not(any(windows, unix)))]
         let _ = fresh;
         Ok(Store { conn })
     }
@@ -1074,6 +1100,23 @@ mod tests {
         assert!(s.delete_run("b").unwrap());
         assert_eq!(blobs(&s), 3, "bodies only referenced by b are collected");
         assert!(!s.delete_run("b").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_database_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("asa.db");
+        let s = Store::open(&db).unwrap();
+        s.begin_run("r").unwrap(); // writes, so the WAL sidecars exist
+        for f in ["asa.db", "asa.db-wal", "asa.db-shm"] {
+            let p = dir.path().join(f);
+            if p.exists() {
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "{f}: {mode:o}");
+            }
+        }
     }
 
     #[test]

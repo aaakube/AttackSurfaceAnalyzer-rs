@@ -3,7 +3,8 @@ name: Rust
 on:
   push:
     branches: [ "master" ]
-    # Pushing a tag like v0.2.0 also publishes a GitHub release with the zip.
+    # Pushing a tag like v0.5.0 also publishes a GitHub release with the Windows zip
+    # and the Linux tarball.
     tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
@@ -56,27 +57,35 @@ jobs:
       run: cargo test --locked
 
   package:
-    name: Release bundle
+    name: Release bundles
     needs: [lint, test-linux, test-windows]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Toolchain
       run: |
-        rustup target add x86_64-pc-windows-gnu
-        sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+        rustup target add x86_64-pc-windows-gnu x86_64-unknown-linux-musl
+        sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64 musl-tools
     - uses: Swatinem/rust-cache@v2
-    - name: Build the zip (asa.exe, rules, README, docs, licenses, SHA256SUMS)
+    - name: Build the Windows zip and the static Linux tarball (binary, rules, README, docs, licenses, SHA256SUMS)
       run: scripts/package.sh
       env:
-        # Already run on Windows by test-windows.
+        # Already run by test-linux and test-windows.
         ASA_SKIP_TESTS: "1"
+    - name: The Linux binary is static
+      run: |
+        f=$(ls dist/asa-*-linux-x64/asa)
+        file "$f"
+        file "$f" | grep -q "statically linked"
+        "$f" --version
     - uses: actions/upload-artifact@v4
       with:
-        name: asa-windows-x64
+        name: asa-bundles
         path: |
           dist/*.zip
           dist/*.zip.sha256
+          dist/*.tar.gz
+          dist/*.tar.gz.sha256
         if-no-files-found: error
 
   release:
@@ -94,11 +103,11 @@ jobs:
         [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version $version"; exit 1; }
     - uses: actions/download-artifact@v4
       with:
-        name: asa-windows-x64
+        name: asa-bundles
         path: dist
     - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 \
+        gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 dist/*.tar.gz dist/*.tar.gz.sha256 \
           --title "asa $GITHUB_REF_NAME" --generate-notes --verify-tag

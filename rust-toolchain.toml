@@ -1,5 +1,6 @@
-# Always the latest stable Rust, with what the Windows cross-build and CI need.
+# Always the latest stable Rust, with what the Windows cross-build, the static Linux
+# build and CI need.
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-pc-windows-gnu"]
+targets = ["x86_64-pc-windows-gnu", "x86_64-unknown-linux-musl"]

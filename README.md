@@ -1,7 +1,7 @@
-# asa — attack surface analysis for Windows
+# asa — attack surface analysis for Windows and Linux
 
-Take a snapshot of a Windows machine, install or change something, take a second snapshot:
-asa tells you what changed in the attack surface and whether it matters.
+Take a snapshot of a Windows or Linux machine, install or change something, take a second
+snapshot: asa tells you what changed in the attack surface and whether it matters.
 
 A rewrite in Rust inspired by Microsoft's
 [Attack Surface Analyzer](https://github.com/microsoft/AttackSurfaceAnalyzer).
@@ -14,10 +14,13 @@ A rewrite in Rust inspired by Microsoft's
 *Reviewing a Google Chrome Enterprise install on a Windows 11 VM: snapshot, install,
 snapshot, summary in the terminal, then the web UI. Long collection waits are cut.*
 
-- **One file, no install.** `asa.exe` needs no runtime and never uses the network.
+- **One file, no install.** `asa.exe` and the static Linux `asa` need no runtime and never use
+  the network.
 - **Covers what attackers use:** files, services, drivers, firewall, COM, registry persistence,
   users, rights, certificates, ports, scheduled tasks, Defender, WMI, security options, keys,
-  TPM and Wi-Fi.
+  TPM and Wi-Fi on Windows; files (owners, modes, setuid), accounts, systemd services and
+  listening ports on Linux, with Linux rules for persistence, trust, privilege and malware
+  traces.
 - **Fast on real machines:** about 4× faster end to end and 20× less memory than the original
   (see the [comparison](docs/comparison.md)).
 
@@ -33,11 +36,25 @@ From an **elevated** PowerShell:
 .\asa.exe diff before after     # or a report in the terminal
 ```
 
-Download the zip from [Releases](https://github.com/aaakube/AttackSurfaceAnalyzer-rs/releases)
-(check it against its `.sha256`), or build it yourself:
+On Linux, as root:
 
 ```bash
-scripts/package.sh              # dist/asa-<version>-windows-x64.zip + .sha256
+sudo ./asa collect --run-id before
+# ... install or change something ...
+sudo ./asa collect --run-id after
+sudo ./asa serve                # web UI on http://127.0.0.1:8740/
+sudo ./asa diff before after    # or a report in the terminal
+```
+
+The database maps the machine's weaknesses, so asa creates it readable by its owner only
+(root here) on Linux, and by administrators only on Windows.
+
+Download the Windows zip or the Linux tarball from
+[Releases](https://github.com/aaakube/AttackSurfaceAnalyzer-rs/releases) (check it against its
+`.sha256`), or build them yourself:
+
+```bash
+scripts/package.sh              # dist/asa-<version>-windows-x64.zip, -linux-x64.tar.gz, .sha256
 ```
 
 ## Documentation
