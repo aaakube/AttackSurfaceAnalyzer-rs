@@ -218,7 +218,8 @@ pub fn signable(lower_path: &str) -> bool {
 
 #[cfg(windows)]
 pub use ffi::{
-    key_writable_by, read_with_backup, security, service_access, sid_and_name, signature,
+    key_writable_by, protect_database, read_with_backup, security, service_access, sid_and_name,
+    signature,
 };
 
 #[cfg(windows)]
@@ -234,7 +235,8 @@ mod ffi {
     use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SE_REGISTRY_KEY,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT, SE_REGISTRY_KEY, SetNamedSecurityInfoW,
     };
     use windows_sys::Win32::Security::Cryptography::Catalog::{
         CATALOG_INFO, CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
@@ -253,7 +255,8 @@ mod ffi {
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
         DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetSecurityDescriptorDacl,
-        LookupAccountSidW, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
+        LookupAccountSidW, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SID_NAME_USE,
     };
 
     const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
@@ -529,6 +532,146 @@ mod ffi {
     /// `Services\<name>\Security\Security` registry value) into who may start and
     /// reconfigure it. `None` when the descriptor has no explicit DACL (the service
     /// then inherits the SCM default, which does not widen access).
+    /// Secure the database file. On creation, restrict it to SYSTEM and Administrators
+    /// (the database maps the machine's weaknesses). For an existing file, warn once if
+    /// a non-administrator can read or write it, but leave it untouched.
+    pub fn protect_database(path: &Path, fresh: bool) {
+        if fresh {
+            for p in db_files(path) {
+                if let Err(e) = restrict_to_admins(&p) {
+                    eprintln!("warning: could not restrict access to {}: {e}", p.display());
+                    eprintln!(
+                        "         it maps this machine's weaknesses; restrict it to Administrators and SYSTEM by hand"
+                    );
+                    break;
+                }
+            }
+            return;
+        }
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if WARNED.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(s) = security(path) {
+            let mut who: Vec<String> = s
+                .writable_by
+                .iter()
+                .chain(s.readable_by.iter())
+                .cloned()
+                .collect();
+            who.sort();
+            who.dedup();
+            if !who.is_empty() {
+                eprintln!(
+                    "warning: {} is accessible by non-administrators ({}).",
+                    path.display(),
+                    who.join(", ")
+                );
+                eprintln!(
+                    "         it maps this machine's weaknesses; restrict it to Administrators and SYSTEM."
+                );
+            }
+        }
+    }
+
+    /// The database file and its WAL sidecars (which also hold data pages).
+    fn db_files(path: &Path) -> Vec<std::path::PathBuf> {
+        let name = path
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
+        ["", "-wal", "-shm"]
+            .iter()
+            .map(|suffix| {
+                let mut n = name.clone();
+                n.push(suffix);
+                path.with_file_name(&n)
+            })
+            .filter(|p| p.exists())
+            .collect()
+    }
+
+    /// Apply a protected DACL granting full control to SYSTEM, Administrators and the
+    /// current user (so a non-elevated owner is not locked out of their own database),
+    /// and nobody else — in particular not the general Users or Everyone groups.
+    fn restrict_to_admins(path: &Path) -> Result<(), String> {
+        let user_ace = current_user_sid()
+            .map(|s| format!("(A;;FA;;;{s})"))
+            .unwrap_or_default();
+        let sddl = wide(std::ffi::OsStr::new(&format!(
+            "D:PAI(A;;FA;;;SY)(A;;FA;;;BA){user_ace}"
+        )));
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err("building the security descriptor failed".into());
+        }
+        let mut present: i32 = 0;
+        let mut dacl: *mut ACL = null_mut();
+        let mut defaulted: i32 = 0;
+        let got = unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) };
+        if got == 0 || present == 0 {
+            unsafe { LocalFree(sd) };
+            return Err("no DACL in the security descriptor".into());
+        }
+        let mut w = wide(path.as_os_str());
+        let err = unsafe {
+            SetNamedSecurityInfoW(
+                w.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                dacl,
+                null_mut(),
+            )
+        };
+        unsafe { LocalFree(sd) };
+        if err != ERROR_SUCCESS {
+            return Err(format!("setting the DACL failed: win32 error {err}"));
+        }
+        Ok(())
+    }
+
+    /// The SID string of the account running this process, for the DACL above.
+    fn current_user_sid() -> Option<String> {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        unsafe {
+            let mut token: HANDLE = null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return None;
+            }
+            let mut len = 0u32;
+            GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
+            let mut buf = vec![0u8; len as usize];
+            let ok = GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr() as *mut c_void,
+                len,
+                &mut len,
+            );
+            CloseHandle(token);
+            if ok == 0 || buf.is_empty() {
+                return None;
+            }
+            let tu = &*(buf.as_ptr() as *const TOKEN_USER);
+            sid_string(tu.User.Sid)
+        }
+    }
+
     pub fn service_access(sd: &[u8]) -> Option<super::ServiceAccess> {
         let mut present: i32 = 0;
         let mut dacl: *mut ACL = null_mut();

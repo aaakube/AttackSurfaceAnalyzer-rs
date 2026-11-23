@@ -181,6 +181,8 @@ pub struct ComparisonInfo {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
+        // Whether we are creating the file, so we can lock it down on first creation.
+        let fresh = !path.exists();
         let conn = Connection::open(path)
             .with_context(|| format!("opening database {}", path.display()))?;
         conn.execute_batch(
@@ -366,6 +368,13 @@ impl Store {
             )?;
         }
         crate::query::register_functions(&conn)?;
+        // The database (and its WAL sidecars, now created) map the machine's weaknesses;
+        // keep them readable only by Administrators and SYSTEM, and warn if an existing
+        // database is more open than that.
+        #[cfg(windows)]
+        crate::collectors::win::protect_database(path, fresh);
+        #[cfg(not(windows))]
+        let _ = fresh;
         Ok(Store { conn })
     }
 
