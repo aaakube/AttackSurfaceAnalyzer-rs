@@ -451,7 +451,13 @@ mod tests {
         c.collect(&sink).unwrap();
         drop(sink);
         let ids: std::collections::BTreeSet<String> = rx.iter().map(|r| r.identity).collect();
-        let p = |s: &str| dir.path().join(s).to_string_lossy().into_owned();
+        // One component at a time: "a/b" joined on Windows keeps the forward slash.
+        let p = |s: &str| {
+            s.split('/')
+                .fold(dir.path().to_path_buf(), |acc, c| acc.join(c))
+                .to_string_lossy()
+                .into_owned()
+        };
         assert!(ids.contains(&p("dev/shm/.x/payload")), "{ids:?}");
         assert!(
             !ids.contains(&p("dev")) && !ids.contains(&p("dev/null-ish")),

@@ -609,6 +609,11 @@ rules:
             json!({"path": "/etc/apt/sources.list.d/google-chrome.sources", "file_type": "file"}),
         );
         assert!(has(&repo, "Package repository added or changed"));
+        // A legitimate install is attack surface to review, not an error.
+        let worst = |c: &Change| rs.evaluate(c).into_iter().map(|f| f.severity).max();
+        for c in [&sandbox, &cron, &repo] {
+            assert_eq!(worst(c), Some(Severity::Warning), "{:?}", names(&rs, c));
+        }
 
         // Churn is debug only; a placeholder is not a cron job.
         let dpkg = modified(
@@ -757,6 +762,23 @@ rules:
         ] {
             assert!(has(&svc, r), "{r}");
         }
+
+        let listener = |user: &str| {
+            created(
+                Kind::Port,
+                json!({"protocol": "tcp", "port": 27036, "scope": "any", "user": user,
+                       "process": "/home/a/.local/share/Steam/steam", "process_writable_by": ["a"]}),
+            )
+        };
+        assert!(has(&listener("root"), "Root listener writable by non-root"));
+        let steam = listener("a");
+        assert!(!has(&steam, "Root listener writable by non-root"));
+        assert_eq!(
+            worst(&steam),
+            Some(Severity::Warning),
+            "{:?}",
+            names(&rs, &steam)
+        );
 
         let shell = created(
             Kind::Port,

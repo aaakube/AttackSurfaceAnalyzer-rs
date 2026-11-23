@@ -47,6 +47,8 @@ pub struct Socket {
 pub struct Owner {
     pub image: Option<String>,
     pub services: Vec<String>,
+    /// Account the program runs as (Linux; not collected on Windows).
+    pub user: Option<String>,
 }
 
 pub const FIELDS: &[&str] = &[
@@ -61,6 +63,7 @@ pub const FIELDS: &[&str] = &[
     "services",
     "process_signature",
     "process_writable_by",
+    "user",
 ];
 
 #[derive(Serialize, Default)]
@@ -84,6 +87,8 @@ struct PortObject {
     process_signature: Option<win::Signature>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     process_writable_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
 }
 
 fn scope(a: &IpAddr) -> &'static str {
@@ -158,6 +163,7 @@ pub fn records(
             process: owner.image.clone(),
             process_name: name,
             services: services.clone(),
+            user: owner.user.clone(),
             ..Default::default()
         });
         entry.scope = wider(entry.scope, scope(&s.address));
@@ -201,6 +207,7 @@ impl Collector for PortsCollector {
                 owners.entry(s.pid).or_insert_with(|| Owner {
                     image: ffi::image(s.pid),
                     services: services.get(&s.pid).cloned().unwrap_or_default(),
+                    user: None,
                 });
             }
             let (signatures, threads) = (self.signatures, self.threads);
@@ -431,6 +438,7 @@ mod tests {
                 Owner {
                     image: Some(r"C:\Windows\System32\svchost.exe".into()),
                     services: vec!["RpcSs".into()],
+                    user: None,
                 },
             ),
             (
@@ -438,6 +446,7 @@ mod tests {
                 Owner {
                     image: Some(r"C:\Windows\System32\lsass.exe".into()),
                     services: vec![],
+                    user: None,
                 },
             ),
             (
@@ -445,6 +454,7 @@ mod tests {
                 Owner {
                     image: Some(r"C:\Tools\app.exe".into()),
                     services: vec![],
+                    user: None,
                 },
             ),
         ]);
@@ -496,6 +506,7 @@ mod tests {
                 signer: None,
             }),
             process_writable_by: vec!["Users".into()],
+            user: Some("root".into()),
         };
         crate::collectors::assert_fields(&o, FIELDS);
     }

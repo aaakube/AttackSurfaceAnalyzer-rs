@@ -26,6 +26,8 @@ pub struct NetEntry {
     pub address: IpAddr,
     pub port: u16,
     pub inode: u64,
+    /// The socket's owner.
+    pub uid: u32,
 }
 
 /// `0100007F:0016` -> 127.0.0.1, 22. Addresses are printed as host-order 32-bit
@@ -76,6 +78,7 @@ pub fn parse_net(text: &str, protocol: &str) -> Vec<NetEntry> {
                 address,
                 port,
                 inode: f[9].parse().ok()?,
+                uid: f[7].parse().ok()?,
             })
         })
         .collect()
@@ -147,7 +150,7 @@ fn socket_pids(root: &Path) -> (HashMap<u64, u32>, usize) {
     (map, denied)
 }
 
-fn owner(root: &Path, pid: u32) -> Owner {
+fn owner(root: &Path, pid: u32, user: String) -> Owner {
     let image = std::fs::read_link(under(root, &format!("/proc/{pid}/exe")))
         .ok()
         .map(|p| {
@@ -159,7 +162,11 @@ fn owner(root: &Path, pid: u32) -> Owner {
     let services = std::fs::read_to_string(under(root, &format!("/proc/{pid}/cgroup")))
         .map(|t| cgroup_services(&t))
         .unwrap_or_default();
-    Owner { image, services }
+    Owner {
+        image,
+        services,
+        user: Some(user),
+    }
 }
 
 pub struct PortsCollector {
@@ -200,6 +207,7 @@ impl Collector for PortsCollector {
                 format!("{denied} processes' open files were unreadable (run as root to attribute every socket)")
             });
         }
+        let ids = crate::collectors::unix::Ids::load(root);
         let mut owners: HashMap<u32, Owner> = HashMap::new();
         let sockets: Vec<Socket> = entries
             .into_iter()
@@ -207,7 +215,9 @@ impl Collector for PortsCollector {
                 // pid 0: owner unknown.
                 let pid = by_inode.get(&e.inode).copied().unwrap_or(0);
                 if pid != 0 {
-                    owners.entry(pid).or_insert_with(|| owner(root, pid));
+                    owners
+                        .entry(pid)
+                        .or_insert_with(|| owner(root, pid, ids.user(e.uid)));
                 }
                 Socket {
                     protocol,
@@ -271,17 +281,20 @@ mod tests {
                 NetEntry {
                     address: "127.0.0.1".parse().unwrap(),
                     port: 631,
-                    inode: 111
+                    inode: 111,
+                    uid: 0
                 },
                 NetEntry {
                     address: "0.0.0.0".parse().unwrap(),
                     port: 22,
-                    inode: 222
+                    inode: 222,
+                    uid: 0
                 },
                 NetEntry {
                     address: "0.0.0.0".parse().unwrap(),
                     port: 36001,
-                    inode: 444
+                    inode: 444,
+                    uid: 1000
                 },
             ]
         );
@@ -366,6 +379,11 @@ mod tests {
         assert_eq!(ssh["process"], "/usr/sbin/sshd");
         assert_eq!(ssh["process_name"], "sshd");
         assert_eq!(ssh["services"], json!(["ssh.service"]));
+        assert_eq!(
+            ssh["user"], "0",
+            "no passwd in the fixture: uid shown as a number"
+        );
+        assert_eq!(r[r"tcp\dynamic\dev-server"]["user"], "1000");
         assert_eq!(ssh["scope"], "any");
         assert_eq!(r[r"tcp\[::]:22"]["family"], "ipv6");
         assert_eq!(r[r"tcp\127.0.0.1:631"]["process"], "/usr/sbin/cupsd");

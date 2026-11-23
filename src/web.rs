@@ -859,6 +859,7 @@ fn summary(kind: &str, d: &Value) -> String {
         ],
         "port" => vec![
             Some(s("process_name").unwrap_or_default()),
+            s("user").map(|u| format!("as {u}")),
             s("services"),
             s("scope").map(|sc| match sc.as_str() {
                 "any" => "ALL INTERFACES".into(),

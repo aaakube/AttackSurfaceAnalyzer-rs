@@ -10,6 +10,12 @@
 #
 # `writable_by` lists non-root principals the mode bits let write: the owning
 # user, `%group`, and `everyone`.
+#
+# Severity scale (keep it honest: legitimate installs should stay at warning):
+#   critical  exploitable right now by a non-root user, or almost certainly malicious
+#   error     rarely legitimate: likely compromise or a dangerous misconfiguration
+#   warning   normal for installs and admin work, but changes the attack surface
+#   info      context; debug: churn (plain data only, see below)
 
 defaults:
   file: info
@@ -88,6 +94,16 @@ rules:
               - '^/tmp/\.(X11|ICE|font|XIM|Test)-unix$'
               - '^/tmp/\.X[0-9]+-lock$'
 
+  - name: Hidden executable in a temporary location
+    description: Programs hidden under a dot-name in /tmp, /var/tmp or /dev/shm are a hallmark of malware staging.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: path, regex: '^/(tmp|var/tmp|dev/shm)/(.*/)?\.[^/]+(/|$)' }
+
   - name: Symlink into a temporary location
     description: A system path that resolves into /tmp or /dev/shm runs or reads whatever lands there.
     severity: error
@@ -143,7 +159,7 @@ rules:
   # ---------------------------------------------------------- setuid / modes
   - name: New setuid-root file
     description: Runs as root whoever starts it; every setuid-root program is privilege-escalation surface.
-    severity: error
+    severity: warning
     kinds: [file]
     changes: [created, modified]
     when:
@@ -244,7 +260,7 @@ rules:
         - { field: group, changed: true }
 
   - name: Executable in a temporary or shared-memory location
-    severity: error
+    severity: warning
     kinds: [file]
     changes: [created, modified]
     when:
@@ -280,7 +296,7 @@ rules:
 
   - name: systemd generator
     description: Generators run as root early at every boot and on daemon-reload.
-    severity: error
+    severity: warning
     kinds: [file]
     changes: [created, modified]
     when:
@@ -402,7 +418,7 @@ rules:
   # --------------------------------------------------------------- privilege
   - name: sudoers changed
     description: Decides who can run what as root.
-    severity: error
+    severity: warning
     kinds: [file]
     changes: [created, modified]
     when: { field: path, regex: '^/etc/sudoers(\.d/.+)?$' }
@@ -415,7 +431,7 @@ rules:
 
   - name: PAM configuration changed
     description: PAM decides how logins, sudo and su authenticate.
-    severity: error
+    severity: warning
     kinds: [file]
     changes: [created, modified]
     when:
@@ -489,7 +505,7 @@ rules:
 
   - name: Service commands changed
     description: The service now runs different programs (an edited unit or a new drop-in).
-    severity: error
+    severity: warning
     kinds: [service]
     changes: [modified]
     when:
@@ -614,7 +630,7 @@ rules:
 
   - name: Listener now reachable from the network
     description: It used to accept local connections only.
-    severity: error
+    severity: warning
     kinds: [port]
     changes: [modified]
     when:
@@ -622,14 +638,28 @@ rules:
         - { field: scope, changed: true }
         - { field: scope, eq: any }
 
-  - name: Listening program writable by non-root
+  - name: Root listener writable by non-root
+    description: Anyone listed can replace a program root runs and exposes to the network.
     severity: critical
     kinds: [port]
     changes: [created, modified]
-    when: { field: process_writable_by, exists: true }
+    when:
+      all:
+        - { field: process_writable_by, exists: true }
+        - { field: user, eq: root }
+
+  - name: Listening program writable by non-root
+    description: The program runs as an unprivileged account; a writer other than that account can take it over.
+    severity: warning
+    kinds: [port]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: process_writable_by, exists: true }
+        - { field: user, ne: root }
 
   - name: Listening program in a user-writable location
-    severity: error
+    severity: warning
     kinds: [port]
     changes: [created, modified]
     when: { field: process, regex: '^/(home|tmp|var/tmp|dev/shm)/' }
