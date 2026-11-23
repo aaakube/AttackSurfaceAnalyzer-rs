@@ -355,6 +355,15 @@ fn collect(db: &Path, args: CollectArgs) -> Result<ExitCode> {
     if !args.no_default_excludes {
         exclude.extend(collectors::files::default_excludes());
     }
+    // The database (and its WAL sidecars) changes during the run; recording it would
+    // make every comparison show asa itself.
+    if let Ok(db_abs) = std::path::absolute(db) {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut p = db_abs.clone().into_os_string();
+            p.push(suffix);
+            exclude.push(p.into());
+        }
+    }
     let paths = if args.paths.is_empty() {
         collectors::files::default_roots()
     } else {

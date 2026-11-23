@@ -616,11 +616,83 @@ rules:
             json!({"path": "/var/lib/dpkg/status", "size": 1}),
             json!({"path": "/var/lib/dpkg/status", "size": 2}),
         );
-        assert_eq!(names(&rs, &dpkg), ["Package manager and log churn"]);
+        assert_eq!(names(&rs, &dpkg), ["Package manager, cache and log churn"]);
         assert!(!has(
             &created(Kind::File, json!({"path": "/etc/cron.d/.placeholder"})),
             "Cron job added or changed"
         ));
+
+        // ... but churn locations do not hide evidence.
+        let churn = "Package manager, cache and log churn";
+        let dropped = created(
+            Kind::File,
+            json!({"path": "/home/a/.cache/x/upd", "executable": true, "format": "elf"}),
+        );
+        assert!(!has(&dropped, churn));
+        assert!(has(
+            &dropped,
+            "Executable in a cache, log, temporary or package-database directory"
+        ));
+        let maint = created(
+            Kind::File,
+            json!({"path": "/var/lib/dpkg/info/x.postinst", "executable": true, "format": "script"}),
+        );
+        assert!(names(&rs, &maint).is_empty(), "{:?}", names(&rs, &maint));
+        let hidden = created(
+            Kind::File,
+            json!({"path": "/dev/shm/.x", "file_type": "dir"}),
+        );
+        assert!(!has(&hidden, churn));
+        assert!(has(
+            &hidden,
+            "Hidden file in a system or temporary location"
+        ));
+        assert!(!has(
+            &created(
+                Kind::File,
+                json!({"path": "/usr/lib/node_modules/a/.npmignore"})
+            ),
+            "Hidden file in a system or temporary location"
+        ));
+        let tmp_exec = created(
+            Kind::File,
+            json!({"path": "/tmp/kworker", "executable": true, "format": "elf"}),
+        );
+        assert!(has(
+            &tmp_exec,
+            "Executable in a temporary or shared-memory location"
+        ));
+        let tmp_data = created(Kind::File, json!({"path": "/tmp/session.json"}));
+        assert_eq!(names(&rs, &tmp_data), [churn]);
+        let deleted = |path: &str| {
+            change(
+                Kind::File,
+                ChangeType::Deleted,
+                Some(json!({"path": path, "file_type": "file"})),
+                None,
+            )
+        };
+        assert!(has(&deleted("/var/log/auth.log"), "Log file deleted"));
+        assert!(!has(&deleted("/var/log/auth.log.2.gz"), "Log file deleted"));
+        assert!(has(
+            &deleted("/var/log/wtmp"),
+            "Login records deleted or emptied"
+        ));
+        let wiped = modified(
+            Kind::File,
+            json!({"path": "/var/log/btmp", "size": 4000}),
+            json!({"path": "/var/log/btmp", "size": 0}),
+        );
+        assert!(has(&wiped, "Login records deleted or emptied") && has(&wiped, "Log file emptied"));
+        assert!(!has(
+            &created(Kind::File, json!({"path": "/var/log/wtmp", "size": 0})),
+            "Login records deleted or emptied"
+        ));
+        let link = created(
+            Kind::File,
+            json!({"path": "/usr/local/bin/helper", "file_type": "symlink", "target": "/dev/shm/h"}),
+        );
+        assert!(has(&link, "Symlink into a temporary location"));
 
         let writable_suid = modified(
             Kind::File,

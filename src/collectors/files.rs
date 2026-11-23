@@ -26,26 +26,27 @@ pub fn default_roots() -> Vec<PathBuf> {
     vec![PathBuf::from(format!("{}\\", system_drive()))]
 }
 
+/// `/`, plus `/dev/shm` (a classic staging spot) although `/dev` is excluded.
 #[cfg(not(windows))]
 pub fn default_roots() -> Vec<PathBuf> {
-    vec![PathBuf::from("/")]
+    let mut roots = vec![PathBuf::from("/")];
+    if Path::new("/dev/shm").is_dir() {
+        roots.push(PathBuf::from("/dev/shm"));
+    }
+    roots
 }
 
-/// Pseudo-filesystems (no files, or files that change on every read) and churn.
+/// Pseudo-filesystems only: no files, or files that change on every read. Volatile
+/// but real locations (/tmp, /var/tmp, /var/cache, /dev/shm) are collected, because
+/// that is where malware stages; the Linux rules demote their plain data instead.
+/// /run is excluded: it is runtime state (sockets, pid files, per-user FUSE mounts)
+/// that is gone at reboot.
 #[cfg(not(windows))]
 pub fn default_excludes() -> Vec<PathBuf> {
-    [
-        "/proc",
-        "/sys",
-        "/dev",
-        "/run",
-        "/tmp",
-        "/var/tmp",
-        "/var/cache",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .collect()
+    ["/proc", "/sys", "/dev", "/run"]
+        .iter()
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// Locations that are inaccessible even to administrators, or pure churn.
@@ -181,6 +182,13 @@ impl Collector for FilesCollector {
             .iter()
             .map(|x| fold(x.to_string_lossy().trim_end_matches(['\\', '/'])))
             .collect();
+        // A root inside an excluded directory (/dev/shm under /dev) is still walked.
+        let keep: Vec<String> = self
+            .roots
+            .iter()
+            .map(|r| fold(r.to_string_lossy().trim_end_matches(['\\', '/'])))
+            .filter(|r| !r.is_empty() && is_excluded(Path::new(r), &exclude))
+            .collect();
         let ids = unix::system_ids();
         let mut builder = WalkBuilder::new(first);
         for root in rest {
@@ -192,7 +200,7 @@ impl Collector for FilesCollector {
             .standard_filters(false)
             .follow_links(false)
             .threads(self.threads)
-            .filter_entry(move |e| !is_excluded(e.path(), &exclude))
+            .filter_entry(move |e| !is_excluded(e.path(), &exclude) || is_excluded(e.path(), &keep))
             .build_parallel()
             .run(|| {
                 Box::new(|entry| {
@@ -421,6 +429,34 @@ mod tests {
         assert!(!is_excluded(Path::new("/processes"), &ex));
         assert!(!is_excluded(Path::new("/PROC"), &ex));
         assert!(!is_excluded(Path::new("/var/tmpfoo"), &ex));
+    }
+
+    #[test]
+    fn roots_inside_excluded_directories_are_walked() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = dir.path().join("dev");
+        fs::create_dir_all(dev.join("shm/.x")).unwrap();
+        fs::write(dev.join("null-ish"), "").unwrap();
+        fs::write(dev.join("shm/.x/payload"), "").unwrap();
+        let c = FilesCollector {
+            roots: vec![dir.path().into(), dev.join("shm")],
+            exclude: vec![dev.clone()],
+            hash: false,
+            acls: false,
+            signatures: false,
+            threads: 2,
+        };
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let sink = Sink::new(tx, false);
+        c.collect(&sink).unwrap();
+        drop(sink);
+        let ids: std::collections::BTreeSet<String> = rx.iter().map(|r| r.identity).collect();
+        let p = |s: &str| dir.path().join(s).to_string_lossy().into_owned();
+        assert!(ids.contains(&p("dev/shm/.x/payload")), "{ids:?}");
+        assert!(
+            !ids.contains(&p("dev")) && !ids.contains(&p("dev/null-ish")),
+            "{ids:?}"
+        );
     }
 
     #[cfg(unix)]

@@ -20,26 +20,125 @@ defaults:
 
 rules:
   # ------------------------------------------------------------------- churn
-  - name: Package manager and log churn
-    description: Package databases, logs, caches and documentation change on every install.
+  # Demoting churn must not hide evidence: only plain data is demoted (not code,
+  # not setuid/setgid, not world-writable), and the evidence rules below re-raise
+  # what malware leaves in these same places.
+  - name: Package manager, cache and log churn
+    description: Package databases, logs, caches, temporary files and documentation change on every install.
     severity: debug
     kinds: [file]
     when:
-      field: path
-      regex:
-        - '^/var/lib/(dpkg|apt|ucf|aptitude|sgml-base|xml-core|man-db|dhcp|systemd|polkit-1|PackageKit|NetworkManager|fwupd|rpm|dnf|yum|flatpak|snapd|ubuntu-advantage|update-notifier|update-manager|colord|upower|AccountsService|lightdm|gdm3|private|containerd|docker/(containers|overlay2|image|network|volumes|buildkit|tmp))(/|$)'
-        - '^/var/(log|cache|backups|crash|mail)(/|$)'
-        - '^/var/spool/(anacron|postfix|rsyslog)(/|$)'
-        - '^/usr/share/(doc|man|info|locale|lintian|icons|fonts|mime|bash-completion|zsh|gtk-doc|help|pixmaps|themes|sounds|backgrounds|fish|vim|emacs|gnome/help|i18n|zoneinfo|X11/locale|consolefonts|consoletrans|keymaps|perl5?|common-licenses)(/|$)'
-        - '/__pycache__(/|$)'
-        - '\.pyc$'
-        - '^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-$'
-        - '^/etc/ld\.so\.cache$'
-        - '^/etc/(adjtime|machine-id|\.pwd\.lock|mtab)$'
-        - '^/usr/share/glib-2\.0/schemas/gschemas\.compiled$'
-        - '^/usr/lib/(x86_64-linux-gnu|aarch64-linux-gnu)/(gdk-pixbuf-2\.0/2\.10\.0/loaders\.cache|gio/modules/giomodule\.cache)$'
-        - '^/home/[^/]+/\.(cache|local/share/(Trash|recently-used\.xbel))(/|$)'
-        - '^/root/\.cache(/|$)'
+      all:
+        - field: path
+          regex: &churn
+            - '^/var/lib/(dpkg|apt|ucf|aptitude|sgml-base|xml-core|man-db|dhcp|systemd|polkit-1|PackageKit|NetworkManager|fwupd|rpm|dnf|yum|flatpak|snapd|ubuntu-advantage|update-notifier|update-manager|colord|upower|AccountsService|lightdm|gdm3|private|containerd|swcatalog|docker/(containers|overlay2|image|network|volumes|buildkit|tmp))(/|$)'
+            - '^/var/(log|cache|backups|crash|mail|tmp)(/|$)'
+            - '^/(tmp|dev/shm)(/|$)'
+            - '^/var/spool/(anacron|postfix|rsyslog)(/|$)'
+            - '^/usr/share/(doc|man|info|locale|lintian|icons|fonts|mime|bash-completion|zsh|gtk-doc|help|pixmaps|themes|sounds|backgrounds|fish|vim|emacs|gnome/help|i18n|zoneinfo|X11/locale|consolefonts|consoletrans|keymaps|perl5?|common-licenses)(/|$)'
+            - '/__pycache__/[^/]+\.pyc$'
+            - '^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-$'
+            - '^/etc/ld\.so\.cache$'
+            - '^/etc/(adjtime|machine-id|\.pwd\.lock|mtab)$'
+            - '^/usr/share/glib-2\.0/schemas/gschemas\.compiled$'
+            - '^/usr/lib/(x86_64-linux-gnu|aarch64-linux-gnu)/(gdk-pixbuf-2\.0/2\.10\.0/loaders\.cache|gio/modules/giomodule\.cache)$'
+            - '^/home/[^/]+/\.(cache|local/share/(Trash|recently-used\.xbel))(/|$)'
+            - '^/root/\.cache(/|$)'
+        - { field: executable, ne: true }
+        - { field: setuid, ne: true }
+        - { field: setgid, ne: true }
+        - { field: world_writable, ne: true }
+        # Hidden names are re-raised by "Hidden file in a system or temporary location".
+        - { not: { field: path, regex: '/\.[^/]+$' } }
+
+  # ---------------------------------------------------------------- evidence
+  - name: Executable in a cache, log, temporary or package-database directory
+    description: Programs do not belong among data that changes on every install; malware hides there.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: path, regex: *churn }
+        # Shipped by packages by design: maintainer scripts, reportbug hooks, doc examples.
+        - not:
+            field: path
+            regex:
+              - '^/var/lib/dpkg/info/[^/]+\.(preinst|postinst|prerm|postrm|config)$'
+              - '^/usr/share/bug/'
+              - '^/usr/share/doc/[^/]+/examples/'
+
+  - name: Hidden file in a system or temporary location
+    description: A dot-name under /usr, /etc, /var, /opt, /tmp or /dev/shm is a common way to hide a payload.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: path, regex: '^/(usr|etc|bin|sbin|lib|lib32|lib64|libx32|opt|boot|srv|var|tmp|dev/shm)/(.*/)?\.[^/]+$' }
+        - not:
+            field: path
+            regex:
+              - '/\.(placeholder|keep|gitkeep|gitignore|gitattributes|editorconfig|document|nosearch|babelrc|eslintrc[^/]*|prettierrc[^/]*|stylelintrc[^/]*|dockerignore|npmignore|rels|version|revision-hash|kernelvariables|pwd\.lock|updated|[^/]+\.hmac|build-id)$'
+              - '/\.build-id(/|$)'
+              - '^/usr/(src|share/doc|local/go|lib/node_modules)/'
+              - '/node_modules/'
+              - '^/etc/skel/'
+              - '^/tmp/\.(X11|ICE|font|XIM|Test)-unix$'
+              - '^/tmp/\.X[0-9]+-lock$'
+
+  - name: Symlink into a temporary location
+    description: A system path that resolves into /tmp or /dev/shm runs or reads whatever lands there.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: target, regex: '^/(tmp|var/tmp|dev/shm)/' }
+        - { not: { field: path, regex: '^/(tmp|var/tmp|dev/shm|home/[^/]+)/' } }
+
+  - name: Log file deleted
+    description: Deleting logs is a common way to cover tracks. Rotated copies are expected to go.
+    severity: warning
+    kinds: [file]
+    changes: [deleted]
+    when:
+      all:
+        - { field: path, regex: '^/var/log/' }
+        - { field: file_type, ne: dir }
+        - not:
+            field: path
+            regex: '(\.[0-9]+|\.[0-9]+\.(gz|xz|zst|bz2)|-[0-9]{8}(\.(gz|xz|zst))?|\.old|@[^/]*\.journal~?|\.journal~)$'
+
+  - name: Log file emptied
+    severity: warning
+    kinds: [file]
+    changes: [modified]
+    when:
+      all:
+        - { field: path, regex: '^/var/log/' }
+        - { field: size, eq: 0 }
+
+  - name: Login records deleted or emptied
+    description: wtmp, btmp and lastlog are what `last`, `lastb` and `lastlog` show.
+    severity: error
+    kinds: [file]
+    when:
+      all:
+        - { field: path, regex: '^/var/log/(wtmp|btmp|lastlog)$' }
+        - any:
+            - { field: change, eq: deleted }
+            - all:
+                - { field: change, eq: modified }
+                - { field: size, eq: 0 }
+
+  - name: User lingering enabled
+    description: A lingering user's systemd services start at boot and keep running without a login.
+    severity: warning
+    kinds: [file]
+    changes: [created]
+    when: { field: path, regex: '^/var/lib/systemd/linger/.' }
 
   # ---------------------------------------------------------- setuid / modes
   - name: New setuid-root file
@@ -166,6 +265,8 @@ rules:
             - '^/etc/(crontab|anacrontab)$'
             - '^/etc/cron\.(d|hourly|daily|weekly|monthly|yearly)/[^/]+$'
             - '^/var/spool/cron/(crontabs/)?[^/]+$'
+            - '^/var/spool/cron/atjobs/[^/.][^/]*$'
+            - '^/var/spool/at/[^/.][^/]*$'
         - { not: { field: path, ends_with: /.placeholder } }
 
   - name: systemd timer, path or socket unit

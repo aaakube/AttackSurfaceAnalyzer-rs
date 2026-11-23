@@ -97,7 +97,7 @@ the owning group as `%group`, and `everyone`. POSIX ACLs are not read.
 
 | Collector | Kind | Fields |
 |---|---|---|
-| `files` | file | Same as Windows, plus `owner`, `group`, `mode` (octal), `setuid`, `setgid`, `sticky`, `world_writable`. Executables and shared libraries are sniffed: `format` is `elf`, or `script` for an executable file with a `#!` line. Default root is `/`. `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp` and `/var/cache` are excluded by default. |
+| `files` | file | Same as Windows, plus `owner`, `group`, `mode` (octal), `setuid`, `setgid`, `sticky`, `world_writable`. Executables and shared libraries are sniffed: `format` is `elf`, or `script` for an executable file with a `#!` line. Default roots are `/` and `/dev/shm`. Only the pseudo-filesystems `/proc`, `/sys`, `/dev` and `/run` are excluded. Staging spots such as `/tmp`, `/var/tmp`, `/var/cache` and `/dev/shm` are collected, and the rules demote their plain data. asa never records its own database files. |
 | `users` | user | `name`, `uid`, `gid`, `primary_group`, `comment`, `home`, `shell`, `login_shell`, `password` (set / empty / locked / unknown), `password_hash` (algorithm only, e.g. `yescrypt`, `md5`, `des`), `hash_in_passwd`, `system` (uid below `UID_MIN`), `groups`, `administrator` (uid 0 or in sudo/wheel/admin), `privileged_groups`, `duplicate_uid`. Hashes are never stored. |
 | `users` | group | `name`, `gid`, `members` (supplementary members plus users whose primary group it is), `privileged`, `privilege` (root, sudo, wheel, admin, docker, lxd, disk, shadow, libvirt). |
 | `services` | service | systemd units from `/etc`, `/usr/local/lib`, `/usr/lib` and `/lib` `systemd/system`, highest precedence first. Fields: `name`, `display_name`, `type`, `start` (enabled / disabled / static / masked / template), `account` (`User=`, `dynamic`, else root), `image_path`, `binary`, `binary_missing`, `binary_writable_by`, `unit_path`, `drop_ins`, `unit_writable_by`, `commands` (every `Exec*=`), `hardening` (NoNewPrivileges, ProtectSystem, capability sets, ...). Drop-ins are merged. Enabled template instances such as `getty@tty1.service` get their own record. Aliases are skipped. `/run` (transient units) is not read. |
@@ -114,4 +114,13 @@ On Linux, `asa diff` and `asa serve` use `rules/linux.yaml` by default. It cover
 - accounts (extra uid-0 accounts, empty passwords, weak hashes, new administrators);
 - listeners.
 
-Package-manager databases, logs, caches and documentation are demoted to `debug`.
+Package-manager databases, logs, caches, temporary files and documentation are demoted to
+`debug`, but only when they look like plain data. Code, setuid/setgid, world-writable and
+hidden files in those places are not demoted, and evidence rules raise them:
+- executables in cache, log, temporary or package-database directories;
+- hidden files in system or temporary locations;
+- symlinks into `/tmp` or `/dev/shm`;
+- deleted or emptied logs, and deleted or emptied login records;
+- user lingering, and `at` jobs.
+
+Demoted changes stay in the database; `--min-severity debug` shows them.
