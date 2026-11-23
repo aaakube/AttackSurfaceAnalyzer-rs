@@ -103,6 +103,15 @@ the owning group as `%group`, and `everyone`. POSIX ACLs are not read.
 | `services` | service | systemd units from `/etc`, `/usr/local/lib`, `/usr/lib` and `/lib` `systemd/system`, highest precedence first. Fields: `name`, `display_name`, `type`, `start` (enabled / disabled / static / masked / template), `account` (`User=`, `dynamic`, else root), `image_path`, `binary`, `binary_missing`, `binary_writable_by`, `unit_path`, `drop_ins`, `unit_writable_by`, `commands` (every `Exec*=`), `hardening` (NoNewPrivileges, ProtectSystem, capability sets, ...). Drop-ins are merged. Enabled template instances such as `getty@tty1.service` get their own record. Aliases are skipped. `/run` (transient units) is not read. |
 | `ports` | port | Same fields as Windows. Listening TCP and unconnected UDP sockets from `/proc/net`, attributed through `/proc/<pid>/fd` and `/proc/<pid>/cgroup` (system services only). Sockets in `ip_local_port_range` are grouped per program. |
 
-The built-in rules are written for Windows. Rules that depend only on fields both platforms
-share (writable binaries, listeners on all interfaces, privileged group changes, enabled
-services) also apply to Linux runs. Windows-only conventions are marked `platforms: [windows]`.
+On Linux, `asa diff` and `asa serve` use `rules/linux.yaml` by default. It covers:
+- setuid/setgid files, and executables, files or directories non-root users can write in
+  system locations;
+- persistence (cron, systemd timers and generators, shell startup files, `ld.so.preload`,
+  udev, kernel modules, update-motd, APT hooks);
+- trust (package repositories and signing keys, locally added CA certificates);
+- privilege (sudoers, polkit, PAM, sshd and `authorized_keys`, D-Bus system services);
+- service changes (writable units or binaries, new drop-ins, changed commands or hardening);
+- accounts (extra uid-0 accounts, empty passwords, weak hashes, new administrators);
+- listeners.
+
+Package-manager databases, logs, caches and documentation are demoted to `debug`.

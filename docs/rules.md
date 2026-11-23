@@ -1,8 +1,10 @@
 # Rules
 
-Rules decide the severity of each change. asa ships with 137 built-in rules
-(`asa rules default` prints them); pass your own file with `--rules FILE` to `diff` or
-`serve`.
+Rules decide the severity of each change. asa ships with built-in rules for each platform:
+`rules/default.yaml` (Windows, 170 rules) and `rules/linux.yaml` (Linux). The set for the
+platform asa runs on is used by default, and `asa rules default` prints it. Pass your own
+file with `--rules FILE` to `diff` or `serve`, for example `--rules rules/linux.yaml` to
+review Linux snapshots on another machine.
 
 ## Format
 

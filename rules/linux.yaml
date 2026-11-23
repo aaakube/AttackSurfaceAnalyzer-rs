@@ -1,0 +1,551 @@
+# Built-in rules for Linux (used by default when asa runs on Linux). Override with
+# `asa diff --rules my-rules.yaml`; validate with `asa rules check <file>`.
+#
+# Conditions: all / any / not, or { field: <path>, <op>: <value> } with
+# op one of: eq ne in lt le gt ge contains starts_with ends_with regex exists changed.
+# List values for contains / starts_with / ends_with / regex mean "any of".
+# Linux paths are case-sensitive. A change's severity is that of its most severe
+# matching rule (or the kind's default below), so `debug` rules demote churn
+# without hiding anything a more severe rule flags.
+#
+# `writable_by` lists non-root principals the mode bits let write: the owning
+# user, `%group`, and `everyone`.
+
+defaults:
+  file: info
+  service: info
+  user: warning
+  group: info
+  port: info
+
+rules:
+  # ------------------------------------------------------------------- churn
+  - name: Package manager and log churn
+    description: Package databases, logs, caches and documentation change on every install.
+    severity: debug
+    kinds: [file]
+    when:
+      field: path
+      regex:
+        - '^/var/lib/(dpkg|apt|ucf|aptitude|sgml-base|xml-core|man-db|dhcp|systemd|polkit-1|PackageKit|NetworkManager|fwupd|rpm|dnf|yum|flatpak|snapd|ubuntu-advantage|update-notifier|update-manager|colord|upower|AccountsService|lightdm|gdm3|private|containerd|docker/(containers|overlay2|image|network|volumes|buildkit|tmp))(/|$)'
+        - '^/var/(log|cache|backups|crash|mail)(/|$)'
+        - '^/var/spool/(anacron|postfix|rsyslog)(/|$)'
+        - '^/usr/share/(doc|man|info|locale|lintian|icons|fonts|mime|bash-completion|zsh|gtk-doc|help|pixmaps|themes|sounds|backgrounds|fish|vim|emacs|gnome/help|i18n|zoneinfo|X11/locale|consolefonts|consoletrans|keymaps|perl5?|common-licenses)(/|$)'
+        - '/__pycache__(/|$)'
+        - '\.pyc$'
+        - '^/etc/(passwd|group|shadow|gshadow|subuid|subgid)-$'
+        - '^/etc/ld\.so\.cache$'
+        - '^/etc/(adjtime|machine-id|\.pwd\.lock|mtab)$'
+        - '^/usr/share/glib-2\.0/schemas/gschemas\.compiled$'
+        - '^/usr/lib/(x86_64-linux-gnu|aarch64-linux-gnu)/(gdk-pixbuf-2\.0/2\.10\.0/loaders\.cache|gio/modules/giomodule\.cache)$'
+        - '^/home/[^/]+/\.(cache|local/share/(Trash|recently-used\.xbel))(/|$)'
+        - '^/root/\.cache(/|$)'
+
+  # ---------------------------------------------------------- setuid / modes
+  - name: New setuid-root file
+    description: Runs as root whoever starts it; every setuid-root program is privilege-escalation surface.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: setuid, eq: true }
+        - { field: owner, eq: root }
+        - any:
+            - { field: change, eq: created }
+            - { field: setuid, changed: true }
+            - { field: owner, changed: true }
+
+  - name: New setuid or setgid file
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: file_type, eq: file }
+        - any:
+            - { field: setuid, eq: true }
+            - { field: setgid, eq: true }
+        - any:
+            - { field: change, eq: created }
+            - { field: setuid, changed: true }
+            - { field: setgid, changed: true }
+
+  - name: Setuid or setgid file writable by non-root
+    description: Anyone listed can replace a program that runs with its owner's (usually root's) privileges.
+    severity: critical
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - any:
+            - { field: setuid, eq: true }
+            - { field: setgid, eq: true }
+        - { field: writable_by, exists: true }
+
+  - name: Executable writable by non-root in a system location
+    description: Programs under /usr, /opt, /etc, ... are run by root and other users; a non-root writer can replace them.
+    severity: critical
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: writable_by, exists: true }
+        - { field: path, regex: '^/(usr|opt|etc|bin|sbin|lib|lib32|lib64|libx32|boot|srv)/' }
+
+  - name: World-writable file in a system location
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: file_type, eq: file }
+        - { field: world_writable, eq: true }
+        - { field: path, regex: '^/(usr|opt|etc|bin|sbin|lib|lib32|lib64|libx32|boot|srv|var/lib)/' }
+
+  - name: Writable directory in a protected location
+    description: Non-root users can plant files (libraries, configs, units) where privileged programs read them.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: file_type, eq: dir }
+        - { field: writable_by, exists: true }
+        - { field: sticky, ne: true }
+        - { field: path, regex: '^/(usr|opt|etc|bin|sbin|lib|lib32|lib64|libx32|boot)(/|$)' }
+
+  - name: Executable owned by a non-root user in a system location
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: owner, ne: root }
+        - { field: path, regex: '^/(usr|opt|bin|sbin|lib|lib32|lib64|libx32|boot)/' }
+
+  - name: Permissions changed
+    severity: info
+    kinds: [file]
+    changes: [modified]
+    when:
+      any:
+        - { field: mode, changed: true }
+        - { field: writable_by, changed: true }
+
+  - name: Ownership changed
+    severity: warning
+    kinds: [file]
+    changes: [modified]
+    when:
+      any:
+        - { field: owner, changed: true }
+        - { field: group, changed: true }
+
+  - name: Executable in a temporary or shared-memory location
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: executable, eq: true }
+        - { field: path, regex: '^/(tmp|var/tmp|dev/shm)/' }
+
+  # ------------------------------------------------------------- persistence
+  - name: Cron job added or changed
+    description: Cron runs these on a schedule, as root for system crontabs and cron.* directories.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      all:
+        - field: path
+          regex:
+            - '^/etc/(crontab|anacrontab)$'
+            - '^/etc/cron\.(d|hourly|daily|weekly|monthly|yearly)/[^/]+$'
+            - '^/var/spool/cron/(crontabs/)?[^/]+$'
+        - { not: { field: path, ends_with: /.placeholder } }
+
+  - name: systemd timer, path or socket unit
+    description: Starts a system service (as root unless it says otherwise) on a schedule, a file change or an incoming connection.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex: '^/(etc|usr/lib|lib|usr/local/lib)/systemd/system/[^/]+\.(timer|path|socket)$'
+
+  - name: systemd generator
+    description: Generators run as root early at every boot and on daemon-reload.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex: '^/(etc|usr/lib|lib|usr/local/lib|run)/systemd/(system|user)-generators/.'
+
+  - name: Shell startup file changed
+    description: Runs in every login shell of the users it applies to.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/etc/(profile|bash\.bashrc|environment|zsh/(zshrc|zshenv|zprofile|zlogin)|zshrc|zshenv|csh\.(cshrc|login))$'
+        - '^/etc/profile\.d/.'
+        - '^/(root|home/[^/]+)/\.(bashrc|bash_profile|bash_login|profile|zshrc|zshenv|zprofile|zlogin)$'
+
+  - name: Dynamic linker preload
+    description: Every dynamically linked program, setuid ones included, loads the listed libraries.
+    severity: critical
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, eq: /etc/ld.so.preload }
+
+  - name: Dynamic linker search path changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/etc/ld\.so\.conf(\.d/.+)?$' }
+
+  - name: udev rule added or changed
+    description: udev rules can run programs as root when a device appears.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/(etc|usr/lib|lib)/udev/rules\.d/.' }
+
+  - name: Kernel module configuration changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/etc/modules$'
+        - '^/(etc|usr/lib|lib)/(modules-load|modprobe)\.d/.'
+
+  - name: Kernel module added
+    severity: warning
+    kinds: [file]
+    changes: [created]
+    when: { field: path, regex: '^/(usr/)?lib/modules/[^/]+/(updates|extra|misc|dkms)/.*\.ko(\.(xz|zst|gz))?$' }
+
+  - name: Init script or rc.local
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: ['^/etc/rc\.local$', '^/etc/init\.d/.', '^/etc/rc[0-6S]\.d/.'] }
+
+  - name: Login message script
+    description: update-motd scripts run as root at every interactive login.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/etc/update-motd\.d/.' }
+
+  - name: Desktop autostart entry
+    severity: info
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: ['^/etc/xdg/autostart/.', '^/(root|home/[^/]+)/\.config/autostart/.'] }
+
+  - name: Package manager hook
+    description: APT configuration can run commands as root around every package operation (DPkg::Pre/Post-Invoke).
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: ['^/etc/apt/apt\.conf(\.d/.+)?$', '^/etc/dnf/plugins/.', '^/etc/yum/pluginconf\.d/.'] }
+
+  # ------------------------------------------------------------------- trust
+  - name: Package repository added or changed
+    description: Packages from this source install as root on every upgrade.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/etc/apt/sources\.list(\.d/[^/]+\.(list|sources))?$'
+        - '^/etc/(yum\.repos\.d|zypp/repos\.d)/[^/]+\.repo$'
+        - '^/etc/apk/repositories$'
+
+  - name: Package signing key added or changed
+    description: Packages signed with this key are trusted by the package manager.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/etc/apt/trusted\.gpg(\.d/.+)?$'
+        - '^/etc/apt/keyrings/.'
+        - '^/usr/share/keyrings/.'
+        - '^/etc/pki/rpm-gpg/.'
+
+  - name: Locally added CA certificate
+    description: TLS connections from this machine will trust certificates issued by it.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/usr/local/share/ca-certificates/.'
+        - '^/etc/pki/ca-trust/source/anchors/.'
+        - '^/etc/ca-certificates\.conf$'
+
+  # --------------------------------------------------------------- privilege
+  - name: sudoers changed
+    description: Decides who can run what as root.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/etc/sudoers(\.d/.+)?$' }
+
+  - name: polkit rule added or changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/(etc|usr/share)/polkit-1/(rules\.d|localauthority)/.' }
+
+  - name: PAM configuration changed
+    description: PAM decides how logins, sudo and su authenticate.
+    severity: error
+    kinds: [file]
+    changes: [created, modified]
+    when:
+      field: path
+      regex:
+        - '^/etc/pam\.d/.'
+        - '^/etc/security/.'
+        - '^/(usr/)?lib(64)?/([^/]+-linux-gnu/)?security/pam_[^/]+\.so$'
+
+  - name: SSH server configuration changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/etc/ssh/sshd_config(\.d/.+)?$' }
+
+  - name: SSH authorized keys changed
+    description: Each key listed can log in as that account.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '/\.ssh/authorized_keys2?$' }
+
+  - name: D-Bus system service or policy
+    description: Activatable system services start as root on request; policies decide who may call them.
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/(usr/share|etc|usr/local/share)/dbus-1/(system-services|system\.d)/.' }
+
+  - name: Name resolution changed
+    severity: warning
+    kinds: [file]
+    changes: [created, modified]
+    when: { field: path, regex: '^/etc/(hosts|nsswitch\.conf)$' }
+
+  # ---------------------------------------------------------------- services
+  - name: Service binary writable by non-root
+    description: Anyone listed can replace the program a service runs, usually as root.
+    severity: critical
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: binary_writable_by, exists: true }
+
+  - name: Service unit writable by non-root
+    description: Anyone listed can change what the service runs and as whom.
+    severity: critical
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: unit_writable_by, exists: true }
+
+  - name: Service runs from a user-writable location
+    severity: error
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: binary, regex: '^/(home|tmp|var/tmp|dev/shm)/' }
+
+  - name: New automatic service
+    severity: warning
+    kinds: [service]
+    changes: [created]
+    when: { field: start, eq: enabled }
+
+  - name: Service set to start automatically
+    severity: warning
+    kinds: [service]
+    changes: [modified]
+    when:
+      all:
+        - { field: start, changed: true }
+        - { field: start, eq: enabled }
+
+  - name: Service commands changed
+    description: The service now runs different programs (an edited unit or a new drop-in).
+    severity: error
+    kinds: [service]
+    changes: [modified]
+    when:
+      any:
+        - { field: commands, changed: true }
+        - { field: account, changed: true }
+
+  - name: Service drop-in added or changed
+    severity: warning
+    kinds: [service]
+    changes: [modified]
+    when: { field: drop_ins, changed: true }
+
+  - name: Service hardening changed
+    severity: warning
+    kinds: [service]
+    changes: [modified]
+    when: { field: hardening, changed: true }
+
+  - name: Automatic service binary missing
+    description: If a non-root user can create the missing file, the service will run it.
+    severity: warning
+    kinds: [service]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: binary_missing, eq: true }
+        - { field: start, eq: enabled }
+
+  - name: Service masked
+    severity: info
+    kinds: [service]
+    changes: [created, modified]
+    when: { field: start, eq: masked }
+
+  # -------------------------------------------------------- users and groups
+  - name: New local account
+    severity: warning
+    kinds: [user]
+    changes: [created]
+
+  - name: Additional uid 0 account
+    description: A second name for root; often a backdoor.
+    severity: critical
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: uid, eq: 0 }
+        - { field: name, ne: root }
+
+  - name: Account with an empty password
+    description: Anyone can log in as this account (where the login method allows empty passwords) or su to it.
+    severity: critical
+    kinds: [user]
+    changes: [created, modified]
+    when: { field: password, eq: empty }
+
+  - name: Password hash in /etc/passwd
+    description: /etc/passwd is world-readable, so anyone can crack this hash offline.
+    severity: error
+    kinds: [user]
+    changes: [created, modified]
+    when: { field: hash_in_passwd, eq: true }
+
+  - name: Weak password hash
+    severity: warning
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: password, eq: set }
+        - { field: password_hash, in: [des, bsdi-des, md5] }
+
+  - name: Account gained administrator rights
+    severity: warning
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: administrator, eq: true }
+        - any:
+            - { field: change, eq: created }
+            - { field: administrator, changed: true }
+
+  - name: Login shell given to a system account
+    severity: warning
+    kinds: [user]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: system, eq: true }
+        - { field: login_shell, eq: true }
+        - any:
+            - { field: change, eq: created }
+            - { field: login_shell, changed: true }
+        - { not: { field: name, eq: root } }
+
+  - name: Privileged group membership changed
+    description: Members of sudo, wheel, docker, disk, shadow, ... are root or close to it.
+    severity: warning
+    kinds: [group]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: privileged, eq: true }
+        - any:
+            - all:
+                - { field: change, eq: created }
+                - { field: members, exists: true }
+            - { field: members, changed: true }
+
+  # ------------------------------------------------------------------- ports
+  - name: New port listening on all interfaces
+    severity: warning
+    kinds: [port]
+    changes: [created]
+    when:
+      all:
+        - { field: scope, eq: any }
+        - { field: protocol, eq: tcp }
+
+  - name: Listener now reachable from the network
+    description: It used to accept local connections only.
+    severity: error
+    kinds: [port]
+    changes: [modified]
+    when:
+      all:
+        - { field: scope, changed: true }
+        - { field: scope, eq: any }
+
+  - name: Listening program writable by non-root
+    severity: critical
+    kinds: [port]
+    changes: [created, modified]
+    when: { field: process_writable_by, exists: true }
+
+  - name: Listening program in a user-writable location
+    severity: error
+    kinds: [port]
+    changes: [created, modified]
+    when: { field: process, regex: '^/(home|tmp|var/tmp|dev/shm)/' }
+
+  - name: Listening program is a shell or relay tool
+    description: A listener served by a shell, netcat or socat is almost always a backdoor.
+    severity: error
+    kinds: [port]
+    changes: [created, modified]
+    when: { field: process_name, regex: '^(sh|bash|dash|zsh|ksh|busybox|nc|ncat|netcat|nc\.(openbsd|traditional)|socat)$' }
+
+  - name: Listener on a commonly abused port
+    description: Ports frequently used by remote-access tools and backdoors.
+    severity: warning
+    kinds: [port]
+    changes: [created, modified]
+    when:
+      all:
+        - { field: port, in: [4444, 4445, 5555, 6666, 1337, 31337, 12345, 54321, 9001, 1080, 8081, 8443] }
+        - { field: scope, ne: loopback }

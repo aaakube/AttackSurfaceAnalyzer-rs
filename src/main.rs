@@ -806,7 +806,7 @@ fn procmon_cmd(db: &Path, cmd: ProcmonCommand) -> Result<ExitCode> {
 fn rules_cmd(cmd: RulesCommand) -> Result<ExitCode> {
     match cmd {
         RulesCommand::Default => {
-            print!("{}", rules::DEFAULT_RULES);
+            print!("{}", rules::builtin_rules());
             Ok(ExitCode::SUCCESS)
         }
         RulesCommand::Check { file } => {

@@ -25,7 +25,18 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub const DEFAULT_RULES: &str = include_str!("../rules/default.yaml");
+pub const WINDOWS_RULES: &str = include_str!("../rules/default.yaml");
+pub const LINUX_RULES: &str = include_str!("../rules/linux.yaml");
+
+/// The built-in rules for the platform asa runs on: snapshots are compared on the
+/// machine (or at least the platform) they were taken from.
+pub fn builtin_rules() -> &'static str {
+    if cfg!(target_os = "linux") {
+        LINUX_RULES
+    } else {
+        WINDOWS_RULES
+    }
+}
 
 /// Fields every change exposes in addition to the object's own fields.
 const META_FIELDS: &[&str] = &["identity", "kind", "change"];
@@ -118,8 +129,8 @@ impl RuleSet {
                 (text, rules)
             }
             None => (
-                DEFAULT_RULES.to_string(),
-                Self::parse(DEFAULT_RULES).context("in built-in default rules")?,
+                builtin_rules().to_string(),
+                Self::parse(builtin_rules()).context("in built-in default rules")?,
             ),
         };
         Ok((
@@ -557,12 +568,140 @@ rules:
 
     #[test]
     fn default_rules_parse() {
-        RuleSet::parse(DEFAULT_RULES).unwrap();
+        RuleSet::parse(WINDOWS_RULES).unwrap();
+        RuleSet::parse(LINUX_RULES).unwrap();
+    }
+
+    #[test]
+    fn builtin_rule_files_lint_clean() {
+        let known = crate::collectors::known_fields();
+        for (name, text) in [("windows", WINDOWS_RULES), ("linux", LINUX_RULES)] {
+            let w = RuleSet::parse(text).unwrap().lint(&known);
+            assert!(w.is_empty(), "{name} rules: {w:?}");
+        }
+    }
+
+    #[test]
+    fn linux_rules() {
+        let rs = RuleSet::parse(LINUX_RULES).unwrap();
+        let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
+        let created = |kind, obj: Value| change(kind, ChangeType::Created, None, Some(obj));
+        let modified = |kind, before: Value, after: Value| {
+            change(kind, ChangeType::Modified, Some(before), Some(after))
+        };
+
+        // The three things Google Chrome's .deb adds.
+        let sandbox = created(
+            Kind::File,
+            json!({"path": "/opt/google/chrome/chrome-sandbox", "file_type": "file", "owner": "root",
+                   "mode": "4755", "setuid": true, "executable": true, "format": "elf"}),
+        );
+        assert!(has(&sandbox, "New setuid-root file"));
+        assert!(!has(&sandbox, "Setuid or setgid file writable by non-root"));
+        let cron = created(
+            Kind::File,
+            json!({"path": "/etc/cron.daily/google-chrome", "file_type": "symlink",
+                   "target": "/opt/google/chrome/cron/google-chrome"}),
+        );
+        assert!(has(&cron, "Cron job added or changed"));
+        let repo = created(
+            Kind::File,
+            json!({"path": "/etc/apt/sources.list.d/google-chrome.sources", "file_type": "file"}),
+        );
+        assert!(has(&repo, "Package repository added or changed"));
+
+        // Churn is debug only; a placeholder is not a cron job.
+        let dpkg = modified(
+            Kind::File,
+            json!({"path": "/var/lib/dpkg/status", "size": 1}),
+            json!({"path": "/var/lib/dpkg/status", "size": 2}),
+        );
+        assert_eq!(names(&rs, &dpkg), ["Package manager and log churn"]);
+        assert!(!has(
+            &created(Kind::File, json!({"path": "/etc/cron.d/.placeholder"})),
+            "Cron job added or changed"
+        ));
+
+        let writable_suid = modified(
+            Kind::File,
+            json!({"path": "/usr/local/bin/t", "setuid": false, "owner": "root", "mode": "0755", "executable": true}),
+            json!({"path": "/usr/local/bin/t", "setuid": true, "owner": "root", "mode": "4777",
+                   "executable": true, "writable_by": ["everyone"], "world_writable": true, "file_type": "file"}),
+        );
+        for r in [
+            "New setuid-root file",
+            "Setuid or setgid file writable by non-root",
+            "Executable writable by non-root in a system location",
+            "World-writable file in a system location",
+            "Permissions changed",
+        ] {
+            assert!(has(&writable_suid, r), "{r}");
+        }
+        // A user's own script in their home is not a system-location finding.
+        let home = created(
+            Kind::File,
+            json!({"path": "/home/a/bin/x", "executable": true, "writable_by": ["a"], "owner": "a"}),
+        );
+        assert!(names(&rs, &home).is_empty(), "{:?}", names(&rs, &home));
+        let tmp_dir = created(
+            Kind::File,
+            json!({"path": "/usr/lib/app/plugins", "file_type": "dir", "writable_by": ["everyone"]}),
+        );
+        assert!(has(&tmp_dir, "Writable directory in a protected location"));
+        let sticky = created(
+            Kind::File,
+            json!({"path": "/usr/lib/app/spool", "file_type": "dir", "writable_by": ["everyone"], "sticky": true}),
+        );
+        assert!(!has(&sticky, "Writable directory in a protected location"));
+
+        let toor = created(
+            Kind::User,
+            json!({"name": "toor", "uid": 0, "password": "set", "administrator": true}),
+        );
+        assert!(has(&toor, "Additional uid 0 account"));
+        assert!(has(&toor, "Account gained administrator rights"));
+        let empty = created(
+            Kind::User,
+            json!({"name": "x", "uid": 1001, "password": "empty"}),
+        );
+        assert!(has(&empty, "Account with an empty password"));
+        let weak = created(
+            Kind::User,
+            json!({"name": "y", "uid": 1002, "password": "set", "password_hash": "md5", "hash_in_passwd": true}),
+        );
+        assert!(has(&weak, "Weak password hash") && has(&weak, "Password hash in /etc/passwd"));
+
+        let svc = modified(
+            Kind::Service,
+            json!({"name": "ssh.service", "commands": ["ExecStart=/usr/sbin/sshd -D"], "start": "enabled"}),
+            json!({"name": "ssh.service", "commands": ["ExecStart=/usr/sbin/sshd -D", "ExecStartPost=/opt/x"],
+                   "drop_ins": ["/etc/systemd/system/ssh.service.d/x.conf"], "start": "enabled",
+                   "unit_writable_by": ["%adm"]}),
+        );
+        for r in [
+            "Service commands changed",
+            "Service drop-in added or changed",
+            "Service unit writable by non-root",
+        ] {
+            assert!(has(&svc, r), "{r}");
+        }
+
+        let shell = created(
+            Kind::Port,
+            json!({"protocol": "tcp", "port": 4444, "scope": "any", "process_name": "nc.openbsd"}),
+        );
+        for r in [
+            "Listening program is a shell or relay tool",
+            "Listener on a commonly abused port",
+            "New port listening on all interfaces",
+        ] {
+            assert!(has(&shell, r), "{r}");
+        }
     }
 
     #[test]
     fn default_rules_for_url_handlers() {
-        let rs = RuleSet::load(None).unwrap();
+        let rs = RuleSet::parse(WINDOWS_RULES).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
         let handler = |obj: Value| change(Kind::Handler, ChangeType::Created, None, Some(obj));
 
@@ -596,7 +735,7 @@ rules:
 
     #[test]
     fn default_rules_for_service_permissions() {
-        let rs = RuleSet::load(None).unwrap();
+        let rs = RuleSet::parse(WINDOWS_RULES).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
 
         // The LibreOfficeMaintenance case: SYSTEM service any user can start.
@@ -638,7 +777,7 @@ rules:
 
     #[test]
     fn default_rules_for_tasks_defender_and_rights() {
-        let rs = RuleSet::load(None).unwrap();
+        let rs = RuleSet::parse(WINDOWS_RULES).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
 
         let task = change(
@@ -740,7 +879,7 @@ rules:
 
     #[test]
     fn default_rules_for_security_wmi_tpm_and_keys() {
-        let rs = RuleSet::load(None).unwrap();
+        let rs = RuleSet::parse(WINDOWS_RULES).unwrap();
         let has = |c: &Change, rule: &str| names(&rs, c).iter().any(|n| n == rule);
         let modified = |kind, before: Value, after: Value| {
             change(kind, ChangeType::Modified, Some(before), Some(after))
